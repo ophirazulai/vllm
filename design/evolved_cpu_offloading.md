@@ -21,6 +21,7 @@ This document specifies the minimum API surface that lets CORAL — or any exter
 - Secure-by-default: feature is opt-in via `EngineArgs` / CLI / env; remote access is opt-in separately.
 - Composable with existing `OffloadingSpecFactory` lazy-loading.
 - Expose enough policy/offload stats for an external grader to score a candidate without scraping logs.
+- Allow per-request opaque `policy_hints` (via `vllm_xargs`) to reach the active policy at insert/touch/evict time, so evolved policies can use request-level signal — priority, session id, expected reuse, tenant id, deadline — without changing vLLM's HTTP/Python API across CORAL generations. See §16.
 
 **Non-goals (Phase 1)**
 - Hot-swapping weight-prefetch logic (`PrefetchOffloader`) — sketched in §15 as Phase 2.
@@ -49,15 +50,20 @@ class CachePolicy(ABC):
     @abstractmethod
     def get(self, key: OffloadKey) -> BlockStatus | None: ...
     @abstractmethod
-    def insert(self, key: OffloadKey, block: BlockStatus) -> None: ...
+    def insert(self, key: OffloadKey, block: BlockStatus,
+               req_context: ReqContext | None = None) -> None: ...
     @abstractmethod
     def remove(self, key: OffloadKey) -> None: ...
     @abstractmethod
-    def touch(self, keys: Iterable[OffloadKey]) -> None: ...
+    def touch(self, keys: Iterable[OffloadKey],
+              req_context: ReqContext | None = None) -> None: ...
     @abstractmethod
-    def evict(self, n: int, protected: set[OffloadKey]
+    def evict(self, n: int, protected: set[OffloadKey],
+              req_context: ReqContext | None = None
               ) -> list[tuple[OffloadKey, BlockStatus]] | None: ...
 ```
+
+The optional `req_context` parameter on `insert` / `touch` / `evict` carries per-request hints (priority, session id, etc.) sourced from the request's `vllm_xargs["policy_hints"]`. `get` and `remove` are intentionally context-free (`get` is content-addressed and may be invoked outside any request's scope; `remove` is a manager-internal cleanup). Built-in `LRUCachePolicy` / `ARCCachePolicy` accept and ignore the kwarg. The full hint channel — request → `ReqContext` → policy method — is specified in §16.
 
 We extend `CachePolicy` with state-transfer hooks so swaps can carry resident blocks forward instead of cold-starting the cache:
 
@@ -211,6 +217,7 @@ Different `engine_id` values coexist in the registry. If `attach` is called twic
    5. `canary_policy.evict(1, {canary_key})` — must return `None` (the only entry is protected); verifies protected-set short-circuit.
    6. Construct a second sentinel pair (`evict_key` from a different random byte string distinct from `canary_key`, `evict_block = BlockStatus(block_id=-2)` with `ref_cnt = 0`); `canary_policy.insert(evict_key, evict_block)`. Then assert `canary_policy.evict(1, set())` returns either `[(canary_key, fake_block)]` or `[(evict_key, evict_block)]` (length must be exactly 1; the choice depends on policy order), and assert the evicted key is no longer present via `canary_policy.get(...)`.
    7. Remove whichever sentinel key remains; assert both sentinel keys are absent.
+   8. With-context probe: with `ctx = ReqContext(policy_hints={"_canary": True})`, construct a third sentinel pair (`ctx_key` from a new random byte string distinct from the prior two, `ctx_block = BlockStatus(block_id=-3)` with `ref_cnt = 0`); call `canary_policy.insert(ctx_key, ctx_block, req_context=ctx)`; `canary_policy.touch([ctx_key], req_context=ctx)`; assert `canary_policy.get(ctx_key) is ctx_block`; `canary_policy.evict(1, set(), req_context=ctx)` must return a length-1 list; assert `canary_policy.get(ctx_key) is None` afterwards. This catches policies that crash when `req_context` is non-None — a class of bug the context-free substeps would miss (§16.7).
 
    If any step raises or any assertion fails, discard both `canary_policy` and `new_policy` and return failure before the pointer flip. The canary surfaces a broad class of bugs (missing returns, wrong types, mishandled empty inputs, stateful corruption from `insert→evict→remove`, broken protected-set handling) at swap time rather than mid-decode. The fake blocks / sentinel keys never enter `new_policy` or the manager's block pool — `canary_policy` is dropped on the floor in either branch.
 6. Metadata: resolve `policy_name` / `policy_version` from the request override first, then from `loaded.cls.POLICY_NAME` / `POLICY_VERSION`. Empty values fail before the pointer flip.
@@ -312,6 +319,8 @@ class OffloadPolicyStats(msgspec.Struct):
     hit_rate: float = 0.0         # hits / max(lookups, 1)
     window_start_generation: int = 0
     active_generation: int = 0    # generation at the time this snapshot was taken
+    hint_keys: tuple[str, ...] = ()  # union of top-level keys observed in
+                                      # req_context.policy_hints since last reset (§16.6)
 ```
 
 `CPUOffloadingManager` updates the raw counters in `lookup`, `prepare_load`, and `prepare_store`; `take_policy_stats(reset: bool, active_generation: int)` returns a snapshot with `hit_rate = hits / max(lookups, 1)`. `window_start_generation` and `active_generation` let the grader detect that stats span multiple policy versions (`window_start_generation != active_generation` means the score is not attributable to a single policy). The registry exposes the snapshot through `EngineCore.get_offload_policy_stats(reset=False)`. Resetting stats at the start of each CORAL candidate keeps scores comparable.
@@ -382,15 +391,19 @@ The grader spins up `LLM` once per process (or reuses a daemonized one across at
 | `tests/v1/kv_offload/cpu/test_policy_stats.py` | Manager policy-stats tests. |
 | `tests/v1/kv_offload/cpu/test_policy_supervisor.py` | Supervisor unit tests: read-side suppression, error budget, rollback semantics (§14). |
 | `tests/v1/kv_offload/cpu/test_policy_hotswap_e2e.py` | Engine-level swap mid-generation. |
+| `tests/v1/kv_offload/cpu/test_policy_request_context.py` | End-to-end hint propagation: stub policy records `(method, key, hints)` tuples; verify `vllm_xargs["policy_hints"]` from an HTTP / offline request reaches `_policy.insert/touch/evict` (§16). |
 
 **Modified files**:
 
 | Path | Change |
 |---|---|
-| [vllm/v1/kv_offload/cpu/policies/base.py](../vllm/v1/kv_offload/cpu/policies/base.py) | Widen the ABC `__init__` to `(cache_capacity: int, **kwargs: Any)` per §4; add an abstract `export_state` hook and a concrete `import_state` hook (default `import_state` loops through `insert`); add a no-op `record_write_error()` hook on `CachePolicy` that `SupervisedCachePolicy` overrides (§14.1) so the manager can notify the supervisor of write-side failures without isinstance checks. |
-| [vllm/v1/kv_offload/cpu/policies/lru.py](../vllm/v1/kv_offload/cpu/policies/lru.py) | Implement `export_state()`, built-in policy metadata, and widen `__init__` to accept and ignore `**kwargs` (per §4). |
-| [vllm/v1/kv_offload/cpu/policies/arc.py](../vllm/v1/kv_offload/cpu/policies/arc.py) | Implement `export_state()` for resident T1/T2 blocks only, built-in policy metadata, and widen `__init__` to accept and ignore `**kwargs` (per §4). |
-| [vllm/v1/kv_offload/cpu/manager.py](../vllm/v1/kv_offload/cpu/manager.py) | Maintain `OffloadPolicyStats`; expose `take_policy_stats(reset=False, active_generation=...)`. Wrap the `prepare_store` insert loop to free pre-allocated blocks if `_policy.insert` raises (§14.3). |
+| [vllm/v1/kv_offload/cpu/policies/base.py](../vllm/v1/kv_offload/cpu/policies/base.py) | Widen the ABC `__init__` to `(cache_capacity: int, **kwargs: Any)` per §4; widen `insert` / `touch` / `evict` to accept optional `req_context: ReqContext \| None = None` (§16); add an abstract `export_state` hook and a concrete `import_state` hook (default `import_state` loops through `insert`); add a no-op `record_write_error()` hook on `CachePolicy` that `SupervisedCachePolicy` overrides (§14.1) so the manager can notify the supervisor of write-side failures without isinstance checks. |
+| [vllm/v1/kv_offload/cpu/policies/lru.py](../vllm/v1/kv_offload/cpu/policies/lru.py) | Implement `export_state()`, built-in policy metadata, widen `__init__` to accept and ignore `**kwargs` (per §4), and accept-and-ignore `req_context` on `insert` / `touch` / `evict` (per §16). |
+| [vllm/v1/kv_offload/cpu/policies/arc.py](../vllm/v1/kv_offload/cpu/policies/arc.py) | Implement `export_state()` for resident T1/T2 blocks only, built-in policy metadata, widen `__init__` to accept and ignore `**kwargs` (per §4), and accept-and-ignore `req_context` on `insert` / `touch` / `evict` (per §16). |
+| [vllm/v1/kv_offload/cpu/manager.py](../vllm/v1/kv_offload/cpu/manager.py) | Maintain `OffloadPolicyStats` (including `hint_keys` accumulation); expose `take_policy_stats(reset=False, active_generation=...)`. Thread `req_context` from `lookup` / `prepare_load` / `prepare_store` / `touch` into `_policy.insert` / `touch` / `evict` per §16, including the §14.3 hardened insert loop. Wrap the `prepare_store` insert loop to free pre-allocated blocks if `_policy.insert` raises (§14.3). |
+| [vllm/v1/kv_offload/base.py](../vllm/v1/kv_offload/base.py) | Add `policy_hints: dict[str, Any] \| None = None` to `ReqContext` (§16.2); widen the `OffloadingManager.touch` ABC to take `req_context: ReqContext` so policy `touch` can receive request scope (§16.4). |
+| [vllm/v1/request.py](../vllm/v1/request.py) | Mirror the existing `kv_transfer_params` extraction at lines 113-115: lift `policy_hints` from `sampling_params.extra_args`, shallow-copy and inject the reserved `_request_id` key, store on a new `Request.policy_hints: dict[str, Any] \| None` attribute (§16.1). |
+| [vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py](../vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py) | At the `RequestOffloadState` constructor (~line 141), populate `ReqContext.policy_hints=self.req.policy_hints` alongside `kv_transfer_params`. At the `_touch` call site (~line 289), pass `req_status.req_context` into the widened `manager.touch(...)`. |
 | [vllm/v1/kv_offload/cpu/spec.py](../vllm/v1/kv_offload/cpu/spec.py) | In `get_manager()`, call `PolicySwapRegistry.singleton().attach(self.vllm_config.instance_id, inner)` on the bare `CPUOffloadingManager` *before* it is optionally wrapped by `FilterReusedOffloadingManager`. |
 | [vllm/envs.py](../vllm/envs.py) | Add `VLLM_ENABLE_POLICY_HOTSWAP`, `VLLM_POLICY_HOTSWAP_ALLOW_REMOTE`. |
 | [vllm/engine/arg_utils.py](../vllm/engine/arg_utils.py) | Add `enable_policy_hotswap: bool = False` field on `EngineArgs` and the matching `--enable-policy-hotswap` CLI flag; in `create_engine_config()` resolve the effective value (CLI flag OR `VLLM_ENABLE_POLICY_HOTSWAP`) and store it under `additional_config["enable_policy_hotswap"]` so the engine process sees the same gate. Raise from `create_engine_config()` if the flag is set together with `data_parallel_size > 1` (per §7). |
@@ -409,7 +422,8 @@ The grader spins up `LLM` once per process (or reuses a daemonized one across at
 - `test_policy_registry.py`: stub `CPUOffloadingManager` + dummy policy. Happy-path swap: verify pointer flip, generation increment, state migration. Failing `export_state`, `__init__`, or `import_state` → pointer untouched. Failing canary (each of `touch`, `evict(0)`, protected `evict`, successful `evict`, `insert`, `get`, `remove` synthetic-key cycle) → rollback restores prior pointer. `dry_run=True` validates but does not increment generation and cleans up the candidate module. Two attached `engine_id` values remain isolated.
 - `test_policy_supervisor.py`: `get`/`evict`/`touch` raising → suppressed, error counter increments, manager sees safe defaults (None / no-op). `insert`/`remove` raising → re-raised. Error budget exceeded → supervisor trips. Cold rollback installs a coherent recovered policy from `inner.export_state()`; if inner export also raises, rollback installs an empty `LRUCachePolicy` and frees all CPU blocks (no leak). Block-pool reconciliation: when `inner.export_state()` succeeds but its residents are a strict subset of `_num_allocated_blocks` (simulating a buggy `insert` that silently dropped keys), assert that after rollback `_free_list` covers exactly the missing block_ids and that subsequent `prepare_store` can reuse those slots (no orphaned-slot leak).
 - Manager hardening: `_policy.insert` raising mid-`prepare_store` → inserted keys are undone, all allocated blocks are freed, `prepare_store` returns `None` (no fatal exception), and `_num_allocated_blocks` / free-list invariants hold. Also cover `_policy.remove` failure in `complete_store(success=False)` (best-effort remove + block freed + error recorded) (§14.3).
-- `test_policy_stats.py`: manager lookup/load/store counters, hit-rate calculation, reset behavior, and wrapper composition. Reset semantics for `policy_rolled_back` / `rollback_generation`: assert sticky-true within a window (visible to `get_offload_policy_stats(reset=False)` after a trip) and cleared only by `take_policy_stats(reset=True)`.
+- `test_policy_stats.py`: manager lookup/load/store counters, hit-rate calculation, reset behavior, and wrapper composition. Reset semantics for `policy_rolled_back` / `rollback_generation`: assert sticky-true within a window (visible to `get_offload_policy_stats(reset=False)` after a trip) and cleared only by `take_policy_stats(reset=True)`. Cover `hint_keys` accumulation and reset (§16.6).
+- `test_policy_request_context.py`: built-in LRU/ARC accept and ignore `req_context` (signature compatibility, no behavior change). Stub `CachePolicy` records every `(method, key, hints)` it receives; (a) offline `LLM.generate` with `SamplingParams(extra_args={"policy_hints": {"priority": "high"}})` produces matching `insert` / `touch` / `evict` observations; (b) HTTP `POST /v1/completions` with `vllm_xargs={"policy_hints": {"priority": "high"}}` produces the same observations (§16).
 
 **Integration** (1 GPU, small model):
 - `test_policy_hotswap_e2e.py`: real `AsyncLLM` or HTTP server with `OffloadingConnector`, start ~50 prompts, then call `swap_offload_policy` to a hand-written counting policy while requests are active. Assert: generation completes, no token corruption (compare to reference run), `counter > 0` after swap. Offline `LLM` tests should swap between `generate()` calls, not from another thread.
@@ -461,6 +475,8 @@ curl -s localhost:8000/v1/offload_policy_stats
 - **Constructor args beyond `cache_capacity`.** Current ABC takes only `(cache_capacity)`. We add an optional `**kwargs` passthrough plumbed from the swap request body via `policy_kwargs: dict`.
 - **`FilterReusedOffloadingManager` composition.** Defined at [vllm/v1/kv_offload/reuse_manager.py:23](../vllm/v1/kv_offload/reuse_manager.py#L23); applied conditionally in [vllm/v1/kv_offload/cpu/spec.py:78](../vllm/v1/kv_offload/cpu/spec.py#L78) when `store_threshold >= 2`. The wrapper holds no policy state — it only filters which keys reach `prepare_store`. `attach()` must be called on the **inner** `CPUOffloadingManager`, before wrapping (see §6). Integration test must cover `store_threshold >= 2` to confirm the swap still drives the inner policy through the wrapper's delegation.
 - **Data parallelism.** Existing async DP utility paths are inconsistent: `DPLBAsyncMPClient` fans out to every `EngineCore` but returns only the first result, while external-LB `DPAsyncMPClient` only targets `self.core_engine`. Hot-swap needs an aggregate result and all-or-nothing semantics across scheduler processes; Phase 1 should reject `data_parallel_size > 1` rather than risk divergent policies.
+- **`policy_hints` is untrusted user data.** Any HTTP client can populate `vllm_xargs["policy_hints"]`; an evolved policy that trusts it (e.g., `os.system(hints["cmd"])`) inherits the §5 threat model in full. Evolved policies must validate hint shape and types before use; the framework does not. See §16.9.
+- **Cross-request hint merge.** `OffloadKey` is content-addressed, so a single key can receive `insert` from request A and `touch` from request B with different hints over its lifetime. The framework hands every call the *calling request's* `req_context`; the policy decides the merge convention (first-writer-wins, last-toucher-wins, weighted aggregate, etc.). Authors who don't think about this will get last-call semantics by default. See §16.5.
 
 ## 14. Buggy-policy protection — surviving bugs in swapped code
 
@@ -644,4 +660,143 @@ Replace `PrefetchOffloader._start_prefetch` / `_wait_for_layer` with a pluggable
 - **Invalidating cudagraphs** if the schedule changes the per-layer call pattern — likely requires a one-time recapture, expensive.
 - Restricting evolution to Python-level reordering of `start_prefetch`/`wait_prefetch` calls. New custom op definitions are forbidden (`prefetch_ops` is registered at import; evolved schedules must consume the existing op signatures).
 
-Defer until Phase 1 is validated against a CORAL run.
+Defer until Phase 1 is validated against a CORAL run. Phase 2 can plumb hint signal into prefetch decisions, but `PrefetchSchedule` operates per layer over a *batch* of requests, not per request, so the natural surface is an aggregated `BatchHintSummary` (set of priority classes seen, max deadline, etc.) — not a single `req_context`. Aggregation lives in the scheduler-side connector before the worker-side broadcast, so workers don't need to know about per-request hint plumbing. Design that aggregation in Phase 2.
+
+## 16. Per-request policy hints
+
+Hot-swappable policy code is only half of what an evolutionary loop wants to mutate. The other half is *what the policy gets to look at*. CORAL should be free to invent new request-level signal — priority class, session id, expected reuse, tenant id, deadline, "this is a one-shot toolcall" — and have the evolved policy read that signal at eviction time. This section adds an opaque pass-through channel that lets a candidate consist of two co-evolving artifacts: the policy code, plus a small client shim that decides what to put in `vllm_xargs["policy_hints"]` per request. vLLM's HTTP/Python surface stays unchanged across CORAL generations.
+
+The plumbing is mostly free: every offloading-manager call site already receives a `ReqContext` ([vllm/v1/kv_offload/base.py:47](../vllm/v1/kv_offload/base.py#L47)) populated from the request at [scheduler.py:141](../vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py#L141). The chain that already carries `kv_transfer_params` ([completion/protocol.py:292-295](../vllm/entrypoints/openai/completion/protocol.py#L292-L295) → [v1/request.py:113-115](../vllm/v1/request.py#L113-L115) → `ReqContext`) carries `policy_hints` the same way. The only gap §16 closes is forwarding `req_context` from `CPUOffloadingManager` into `_policy.insert` / `touch` / `evict`.
+
+### 16.1 Carrier — reuse `vllm_xargs["policy_hints"]`
+
+Both `CompletionRequest` and `ChatCompletionRequest` already expose `vllm_xargs: dict[str, str|int|float] | None` as the documented user-extension field. The OpenAI-compat layer merges it into `SamplingParams.extra_args` at [vllm/entrypoints/openai/completion/protocol.py:292-295](../vllm/entrypoints/openai/completion/protocol.py#L292-L295). Offline `LLM` callers populate `SamplingParams.extra_args["policy_hints"]` directly. We pick the sub-key `policy_hints` and treat it as opaque `dict[str, Any]` end-to-end.
+
+Mirror the existing `kv_transfer_params` extraction at [vllm/v1/request.py:113-115](../vllm/v1/request.py#L113-L115):
+
+```python
+# vllm/v1/request.py — alongside kv_transfer_params
+if sampling_params.extra_args is not None:
+    self.kv_transfer_params = sampling_params.extra_args.get("kv_transfer_params")
+    self.policy_hints: dict[str, Any] | None = (
+        sampling_params.extra_args.get("policy_hints")
+    )
+```
+
+No HTTP schema change is required. Operators who don't enable hot-swap pay nothing — `policy_hints` is read but ignored when no evolved policy consumes it (built-ins discard `req_context`).
+
+**Reserved key.** When `Request.from_engine_core_request` extracts `policy_hints`, it copies the dict (shallow) and injects `_request_id = self.request_id`. Policies that need a stable per-request handle (e.g. to record "request X inserted these blocks") read `hints.get("_request_id")` instead of inventing their own. The shallow copy avoids mutating user-supplied state. Names beginning with `_` are reserved for future framework use; evolved schemas must not collide.
+
+### 16.2 `ReqContext` gains one field
+
+```python
+# vllm/v1/kv_offload/base.py
+@dataclass
+class ReqContext:
+    kv_transfer_params: dict[str, Any] | None = None
+    policy_hints: dict[str, Any] | None = None  # NEW
+```
+
+Populated alongside `kv_transfer_params` at [scheduler.py:141](../vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py#L141):
+
+```python
+self.req_context = ReqContext(
+    kv_transfer_params=self.req.kv_transfer_params,
+    policy_hints=self.req.policy_hints,
+)
+```
+
+### 16.3 Widened `CachePolicy` signatures (additive, default-None)
+
+`CachePolicy.insert` / `touch` / `evict` accept an optional `req_context`. `get` and `remove` are deliberately context-free: a `get` is a content-addressed lookup that may be triggered by any request (or none — e.g., supervisor cold-rollback validation), and `remove` is a manager-internal cleanup with no caller-meaningful request scope.
+
+```python
+class CachePolicy(ABC):
+    @abstractmethod
+    def insert(self, key: OffloadKey, block: BlockStatus,
+               req_context: ReqContext | None = None) -> None: ...
+    @abstractmethod
+    def touch(self, keys: Iterable[OffloadKey],
+              req_context: ReqContext | None = None) -> None: ...
+    @abstractmethod
+    def evict(self, n: int, protected: set[OffloadKey],
+              req_context: ReqContext | None = None
+              ) -> list[tuple[OffloadKey, BlockStatus]] | None: ...
+```
+
+Defaulting to `None` means:
+- Built-in `LRUCachePolicy` and `ARCCachePolicy` accept and ignore the kwarg — one-line widening, no behavior change.
+- Manager paths that legitimately have no request scope (e.g. supervisor cold rollback in §14.2 calls `recovered.import_state(residents)` which loops `insert(key, block)`) can still call without supplying context.
+- Evolved policies opt in by reading `req_context.policy_hints` only when they need it.
+
+### 16.4 Manager forwards `req_context` to `_policy`
+
+`CPUOffloadingManager` already receives `req_context` on `lookup` / `prepare_load` / `prepare_store`. The change is to forward it at three policy call sites:
+
+- [manager.py:137](../vllm/v1/kv_offload/cpu/manager.py#L137) — `_policy.evict(num_blocks_to_evict, protected, req_context)` inside `prepare_store`.
+- [manager.py:159](../vllm/v1/kv_offload/cpu/manager.py#L159) — `_policy.insert(key, block, req_context)` inside the `prepare_store` insert loop. The §14.3 hardened-loop variant must thread `req_context` through too.
+- [manager.py:106](../vllm/v1/kv_offload/cpu/manager.py#L106) — `touch()`. The current `OffloadingManager.touch(keys)` ABC at [base.py:150](../vllm/v1/kv_offload/base.py#L150) takes no context; we widen it to `touch(self, keys, req_context: ReqContext)` and update the call site at [scheduler.py:289](../vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py#L289) which already has `req_status.req_context` in scope. `touch` is the only `OffloadingManager` method on the *forwarded-to-policy* path that lacks `req_context` today (`complete_load` / `complete_store` / `take_events` / `shutdown` also lack it but neither needs nor receives request scope). The wrapper [`FilterReusedOffloadingManager`](../vllm/v1/kv_offload/reuse_manager.py) is updated at the same time to delegate the new `touch(keys, req_context)` signature.
+
+Other manager call sites of `_policy.get` / `_policy.remove` (e.g., `lookup`, `prepare_load`, `complete_load`, `complete_store`) keep their existing signatures.
+
+### 16.5 Cross-request merge semantics
+
+`OffloadKey` is content-addressed (block-hash + group-idx, [base.py:32](../vllm/v1/kv_offload/base.py#L32)). The same key can be `insert`-ed by request A and later `touch`-ed or seen during `evict` triggered by request B. The framework hands every call the *calling request's* `req_context`; the policy decides the merge convention (first-writer-wins, last-toucher-wins, weighted aggregate, anything else). Evolved policies that need to remember per-block hints across calls keep their own `dict[OffloadKey, ...]` table; the framework does not provide one.
+
+Phase 1 deliberately does *not* tag `OffloadKey` with request-scoped data, because that would forfeit cross-request prefix-cache hits — the whole reason offloading helps. Tagging is a possible Phase 2 extension behind an explicit policy opt-in.
+
+### 16.6 Telemetry — `hint_keys`
+
+`OffloadPolicyStats` (§8.3) gains:
+
+```python
+hint_keys: tuple[str, ...] = ()  # union of top-level keys observed in
+                                  # req_context.policy_hints since last reset
+```
+
+The manager samples `policy_hints.keys()` at every site where `req_context` is in scope at the manager level — `lookup`, `prepare_load`, `prepare_store`, and the widened `touch` (§16.4) — and unions them into a per-window set. `take_policy_stats(reset=True)` clears the set. Cost: one `set.update` per call where hints are non-empty; the union saturates quickly within a CORAL run, so steady-state cost is one membership check + a small set comparison per call. The grader uses this as a smoke signal that its client shim actually populated hints; values are not exposed because schema names tend to leak less than values (e.g., `"tenant_id"` is a key, the actual id is the value). Key names themselves can still be sensitive if a malicious client invents them, so operators should treat `hint_keys` as untrusted in any downstream logging.
+
+### 16.7 Canary update (§6 step 5)
+
+The §6 step 5 canary is extended with a final substep that exercises the with-context path. With `ctx = ReqContext(policy_hints={"_canary": True})`, the canary inserts a fresh sentinel pair via `canary_policy.insert(..., req_context=ctx)`, calls `touch(..., req_context=ctx)`, and `evict(1, set(), req_context=ctx)`. This catches policies that crash specifically when `req_context` is non-None — a class of bug a context-free canary would miss. Earlier substeps (1-7) keep using the default-None path so we cover both.
+
+### 16.8 CORAL grader sketch — co-evolving artifact
+
+The §9 grader sketch is unchanged on the vLLM side. The CORAL candidate's worktree now contains *two* files: `policy.py` (as before) and an optional `client_hints.py` exposing `make_hints(prompt: str, request_meta: dict) -> dict`. The grader, before each `llm.generate(...)` call, computes hints per prompt and threads them through:
+
+```python
+from coral_task.candidate import client_hints  # candidate-supplied module
+
+hints_per_prompt = [client_hints.make_hints(p, meta) for p in prompts]
+expected_keys = {k for h in hints_per_prompt for k in h}
+outs = llm.generate(
+    prompts,
+    [SamplingParams(max_tokens=256, extra_args={"policy_hints": h})
+     for h in hints_per_prompt],
+)
+stats = llm.get_offload_policy_stats()
+# The canary's "_canary" hint runs on a separate canary_policy instance
+# (§6 step 5 / §16.7) and never reaches manager-level sampling, so its
+# absence here is incidental. The real check is that the candidate's
+# keys made it through the carrier:
+assert expected_keys & set(stats.hint_keys), (
+    "client_hints output did not propagate to the policy"
+)
+```
+
+CORAL's mutation operators are free to evolve both `policy.py` and `client_hints.py` together; vLLM never sees the hint schema. If `client_hints` is absent the grader passes no hints and the policy must still produce a usable score on raw content alone.
+
+### 16.9 Threat model addendum
+
+`policy_hints` is user-supplied untrusted data. The same gating from §5 (feature opt-in, localhost-only-by-default, source hash logging) applies — hot-swap remains the gate; hints are just one more thing that can be tampered with once an attacker is past the gate. Evolved policies must treat hints as untrusted inside their own logic: `dict.get` with type checks, bounded sizes, no `eval` / `exec` on hint values, no path traversal, no PII echoing into logs. Violations are policy bugs surfaced by the §14 supervisor's error budget — the framework does not validate hint contents.
+
+What the framework guarantees:
+- `req_context.policy_hints` is either `None` or a `dict[str, Any]`. Nested values are whatever the request body deserialized to.
+- The framework does not mutate the hint dict; policies must not either (treat as read-only).
+- The hint dict carries the request's `request_id` (or equivalent stable id) under a reserved `_request_id` key the carrier injects, so policies that need a stable request handle have one without inventing their own. (Policies must still tolerate its absence — e.g., during canary calls.)
+
+What the framework does *not* guarantee:
+- Hint key names, types, or sizes. Two CORAL generations may use entirely different schemas.
+- Stability of values across calls. A misbehaving client could send different hints for the same `OffloadKey` on every call.
+- Object identity of the hint dict across calls. The connector → manager hop is in-process, but stats / IPC paths may reconstruct dicts; policies must not rely on `id(hints)` being stable.
+- Sanitization. Hints can contain arbitrary strings, including ones that look like log injection or path traversal — the policy is responsible for not interpreting them as control flow.
