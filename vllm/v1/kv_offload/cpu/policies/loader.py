@@ -190,10 +190,10 @@ class PolicyLoader:
             raise PolicyLoadError(
                 f"module:{dotted}", f"could not resolve spec: {e}"
             ) from e
-        if spec is None or spec.origin is None or spec.origin == "built-in":
+        if spec is None or spec.origin is None or spec.origin in ("built-in", "frozen"):
             raise PolicyLoadError(
                 f"module:{dotted}",
-                "module has no source-backed file (built-in or namespace?)",
+                "module has no source-backed file (built-in, frozen, or namespace?)",
             )
         path = spec.origin
         try:
@@ -256,11 +256,15 @@ class PolicyLoader:
 
         Exactly one of the three keyword arguments must be set.
         """
-        provided = [(k, v) for k, v in (
-            ("source_path", source_path),
-            ("module", module),
-            ("source", source),
-        ) if v is not None]
+        provided = [
+            (k, v)
+            for k, v in (
+                ("source_path", source_path),
+                ("module", module),
+                ("source", source),
+            )
+            if v is not None
+        ]
         if len(provided) != 1:
             raise PolicyLoadError(
                 "request",

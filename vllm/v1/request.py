@@ -129,6 +129,17 @@ class Request:
                     # state; the reserved `_request_id` key gives policies
                     # a stable per-request handle (design §16.1).
                     hints = dict(raw_hints)
+                    for key in hints:
+                        if not isinstance(key, str):
+                            raise TypeError(
+                                "sampling_params.extra_args['policy_hints'] must use "
+                                "string keys"
+                            )
+                    if "_request_id" in hints:
+                        raise ValueError(
+                            "sampling_params.extra_args['policy_hints'] must not "
+                            "define reserved key '_request_id'"
+                        )
                     hints["_request_id"] = self.request_id
                     self.policy_hints = hints
         else:

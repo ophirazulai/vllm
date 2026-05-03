@@ -665,6 +665,201 @@ def test_cold_recover_drops_duplicate_residents_and_reports_lru():
     assert entry.rollback_generation == 7
 
 
+def test_cold_recover_drops_duplicate_keys_with_distinct_block_ids():
+    """A buggy policy that exports the same key with two different block_ids
+    must not strand either block_id. `LRUCachePolicy.import_state` overwrites
+    on duplicate keys, so without dedupe the first row's block_id would be
+    marked recovered but unreachable in the policy → permanent slot leak.
+    """
+    manager = CPUOffloadingManager(num_blocks=4, cache_policy="lru")
+    manager.prepare_store(to_keys([10, 11, 12]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([10, 11, 12]))
+    assert manager._num_allocated_blocks == 3
+
+    class DuplicateKeyPolicy(CachePolicy):
+        POLICY_NAME = "dup-key"
+        POLICY_VERSION = "test"
+
+        def __init__(self, cache_capacity: int, **kwargs):
+            del cache_capacity, kwargs
+
+        def get(self, key: OffloadKey) -> BlockStatus | None:
+            return None
+
+        def insert(
+            self,
+            key: OffloadKey,
+            block: BlockStatus,
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del key, block, req_context
+
+        def remove(self, key: OffloadKey) -> None:
+            del key
+
+        def touch(
+            self,
+            keys: Iterable[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del keys, req_context
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+            del n, protected, req_context
+            return None
+
+        def export_state(self) -> Iterable[tuple[OffloadKey, BlockStatus]]:
+            # Same key emitted twice with different in-range block_ids.
+            return [(to_key(7), BlockStatus(0)), (to_key(7), BlockStatus(1))]
+
+    registry = PolicySwapRegistry()
+    entry = PolicyRegistryEntry(
+        manager_ref=weakref.ref(manager),
+        generation=3,
+        active=ActivePolicy(
+            engine_id="engine",
+            generation=3,
+            policy_name="dup-key",
+            policy_version="test",
+            source_hash="abc",
+            source_origin="source",
+        ),
+        supervisor=SupervisedCachePolicy(DuplicateKeyPolicy(1)),
+        _builtin_name="lru",
+        _builtin_version="builtin",
+    )
+
+    registry._cold_recover("engine", entry, manager)
+
+    # Only the first occurrence of the key survives. The second's block_id
+    # (1) is *not* in `recovered_block_ids`, so it must be back in the free
+    # list — proving no slot leak.
+    assert isinstance(manager._policy, LRUCachePolicy)
+    residents = list(manager._policy.export_state())
+    assert len(residents) == 1
+    surviving_key, surviving_block = residents[0]
+    assert surviving_key == to_key(7)
+    assert surviving_block.block_id == 0
+    # Free list = allocated - recovered = {0,1,2} - {0} = {1,2}, sorted.
+    assert manager._free_list == [1, 2]
+
+
+def test_cold_recover_drops_malformed_residents():
+    manager = CPUOffloadingManager(num_blocks=3, cache_policy="lru")
+    manager.prepare_store(to_keys([10, 11]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([10, 11]))
+    assert manager._num_allocated_blocks == 2
+
+    class MalformedExportPolicy(CachePolicy):
+        POLICY_NAME = "malformed-export"
+        POLICY_VERSION = "test"
+
+        def __init__(self, cache_capacity: int, **kwargs):
+            del cache_capacity, kwargs
+
+        def get(self, key: OffloadKey) -> BlockStatus | None:
+            del key
+            return None
+
+        def insert(
+            self,
+            key: OffloadKey,
+            block: BlockStatus,
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del key, block, req_context
+
+        def remove(self, key: OffloadKey) -> None:
+            del key
+
+        def touch(
+            self,
+            keys: Iterable[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del keys, req_context
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+            del n, protected, req_context
+            return None
+
+        def export_state(self):
+            return [
+                (to_key(7), "not-a-block"),
+                ("not-bytes", BlockStatus(0)),
+                (to_key(8), BlockStatus(1)),
+            ]
+
+    registry = PolicySwapRegistry()
+    entry = PolicyRegistryEntry(
+        manager_ref=weakref.ref(manager),
+        generation=5,
+        active=ActivePolicy(
+            engine_id="engine",
+            generation=5,
+            policy_name="malformed-export",
+            policy_version="test",
+            source_hash="abc",
+            source_origin="source",
+        ),
+        supervisor=SupervisedCachePolicy(MalformedExportPolicy(1)),
+    )
+
+    registry._cold_recover("engine", entry, manager)
+
+    assert isinstance(manager._policy, LRUCachePolicy)
+    residents = list(manager._policy.export_state())
+    assert [(key, block.block_id) for key, block in residents] == [(to_key(8), 1)]
+    assert manager._free_list == [0]
+
+
+def test_registry_reattach_resets_active_policy_to_builtin():
+    registry = PolicySwapRegistry()
+    first_manager = CPUOffloadingManager(num_blocks=1, cache_policy="lru")
+    registry.attach("engine", first_manager, builtin_name="lru")
+
+    entry = registry._entries["engine"]
+    entry.generation = 9
+    entry.active = ActivePolicy(
+        engine_id="engine",
+        generation=9,
+        policy_name="evolved",
+        policy_version="bad",
+        source_hash="abc",
+        source_origin="source",
+    )
+    entry.active_module_name = "vllm._evolved.fake"
+    entry.supervisor = SupervisedCachePolicy(LRUCachePolicy(cache_capacity=1))
+    entry.cumulative_policy_errors = 3
+    entry.policy_rolled_back = True
+    entry.rollback_generation = 8
+
+    second_manager = CPUOffloadingManager(num_blocks=1, cache_policy="arc")
+    registry.attach("engine", second_manager, builtin_name="arc")
+
+    active = registry.current("engine")
+    assert active is not None
+    assert active.generation == 0
+    assert active.policy_name == "arc"
+    assert active.policy_version == "builtin"
+    assert entry.manager_ref is not None
+    assert entry.manager_ref() is second_manager
+    assert entry.supervisor is None
+    assert entry.cumulative_policy_errors == 0
+    assert entry.policy_rolled_back is False
+    assert entry.rollback_generation == 0
+
+
 def test_supervisor_rejects_malformed_read_results():
     class BadReadPolicy(CachePolicy):
         POLICY_NAME = "bad-read"
@@ -713,3 +908,144 @@ def test_supervisor_rejects_malformed_read_results():
     assert supervisor.get(key) is None
     assert supervisor.evict(1, {key}) is None
     assert supervisor.tripped
+
+
+def test_prepare_store_rejects_malformed_evict_output():
+    class MalformedEvictPolicy(CachePolicy):
+        POLICY_NAME = "bad-evict"
+        POLICY_VERSION = "test"
+
+        def __init__(self, cache_capacity: int, **kwargs):
+            del cache_capacity, kwargs
+            self.blocks: dict[OffloadKey, BlockStatus] = {}
+            self.write_errors = 0
+
+        def get(self, key: OffloadKey) -> BlockStatus | None:
+            return self.blocks.get(key)
+
+        def insert(
+            self,
+            key: OffloadKey,
+            block: BlockStatus,
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del req_context
+            self.blocks[key] = block
+
+        def remove(self, key: OffloadKey) -> None:
+            del self.blocks[key]
+
+        def touch(
+            self,
+            keys: Iterable[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> None:
+            del keys, req_context
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+            del n, protected, req_context
+            # Invalid: block_id is out of range for manager allocation.
+            bad_block = BlockStatus(-123)
+            bad_block.ref_cnt = 0
+            return [(to_key(999), bad_block)]
+
+        def export_state(self) -> Iterable[tuple[OffloadKey, BlockStatus]]:
+            return list(self.blocks.items())
+
+        def record_write_error(self) -> None:
+            self.write_errors += 1
+
+    manager = CPUOffloadingManager(num_blocks=1, cache_policy="lru")
+
+    # Fill the single slot so a later store must evict.
+    manager.prepare_store(to_keys([1]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([1]))
+    assert manager._num_allocated_blocks == 1
+    assert manager._free_list == []
+
+    bad_policy = MalformedEvictPolicy(cache_capacity=1)
+    resident = BlockStatus(0)
+    resident.ref_cnt = 0
+    bad_policy.insert(to_key(1), resident)
+    manager._policy = bad_policy
+
+    out = manager.prepare_store(to_keys([2]), _EMPTY_REQ_CTX)
+
+    # Store is rejected and block-pool integrity is preserved.
+    assert out is None
+    assert manager._free_list == []
+    assert manager._num_allocated_blocks == 1
+    assert bad_policy.write_errors == 1
+
+
+def test_prepare_store_rejects_unsized_evict_output():
+    class UnsizedEvictPolicy(LRUCachePolicy):
+        def __init__(self, cache_capacity: int, **kwargs):
+            super().__init__(cache_capacity, **kwargs)
+            self.write_errors = 0
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ):
+            del n, protected, req_context
+            return object()
+
+        def record_write_error(self) -> None:
+            self.write_errors += 1
+
+    manager = CPUOffloadingManager(num_blocks=1, cache_policy="lru")
+    manager.prepare_store(to_keys([1]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([1]))
+
+    bad_policy = UnsizedEvictPolicy(cache_capacity=1)
+    resident = BlockStatus(0)
+    resident.ref_cnt = 0
+    bad_policy.insert(to_key(1), resident)
+    manager._policy = bad_policy
+
+    assert manager.prepare_store(to_keys([2]), _EMPTY_REQ_CTX) is None
+    assert manager._free_list == []
+    assert bad_policy.write_errors == 1
+
+
+def test_prepare_store_rejects_evict_that_keeps_key_present():
+    class NonRemovingEvictPolicy(LRUCachePolicy):
+        def __init__(self, cache_capacity: int, **kwargs):
+            super().__init__(cache_capacity, **kwargs)
+            self.write_errors = 0
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+            del n, protected, req_context
+            key, block = next(iter(self.blocks.items()))
+            return [(key, block)]
+
+        def record_write_error(self) -> None:
+            self.write_errors += 1
+
+    manager = CPUOffloadingManager(num_blocks=1, cache_policy="lru")
+    manager.prepare_store(to_keys([1]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([1]))
+
+    bad_policy = NonRemovingEvictPolicy(cache_capacity=1)
+    resident = BlockStatus(0)
+    resident.ref_cnt = 0
+    bad_policy.insert(to_key(1), resident)
+    manager._policy = bad_policy
+
+    assert manager.prepare_store(to_keys([2]), _EMPTY_REQ_CTX) is None
+    assert manager.lookup(to_key(1), _EMPTY_REQ_CTX) is True
+    assert manager._free_list == []
+    assert bad_policy.write_errors == 1

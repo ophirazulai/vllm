@@ -184,6 +184,12 @@ def _run_canary(cls: type[CachePolicy], cache_capacity: int, kwargs: dict) -> No
     evicted_key = evicted[0][0]
     if evicted_key not in (canary_key, evict_key):
         raise RuntimeError("canary: evicted unrecognized key")
+    expected_blocks = {
+        canary_key: fake_block,
+        evict_key: evict_block,
+    }
+    if evicted[0][1] is not expected_blocks[evicted_key]:
+        raise RuntimeError("canary: evict returned the wrong BlockStatus object")
     if canary.get(evicted_key) is not None:
         raise RuntimeError("canary: evicted key still present")
 
@@ -205,6 +211,9 @@ def _run_canary(cls: type[CachePolicy], cache_capacity: int, kwargs: dict) -> No
     ctx_evicted = canary.evict(1, set(), req_context=ctx)
     if ctx_evicted is None or len(ctx_evicted) != 1:
         raise RuntimeError("canary: with-context evict failed")
+    ctx_evicted_key, ctx_evicted_block = ctx_evicted[0]
+    if ctx_evicted_key != ctx_key or ctx_evicted_block is not ctx_block:
+        raise RuntimeError("canary: with-context evict returned wrong entry")
     if canary.get(ctx_key) is not None:
         raise RuntimeError("canary: with-context evicted key still present")
 
@@ -246,28 +255,33 @@ class PolicySwapRegistry:
             if entry is None:
                 entry = PolicyRegistryEntry()
                 self._entries[engine_id] = entry
-            elif entry.manager_ref is not None and entry.manager_ref() is not None:
-                logger.warning(
-                    "PolicySwapRegistry.attach called twice for engine_id=%s; "
-                    "replacing prior manager and dropping prior synthetic module",
-                    engine_id,
-                )
+            elif entry.manager_ref is not None:
+                if entry.manager_ref() is not None:
+                    logger.warning(
+                        "PolicySwapRegistry.attach called twice for engine_id=%s; "
+                        "replacing prior manager and dropping prior synthetic module",
+                        engine_id,
+                    )
                 discard_module(entry.active_module_name)
+                entry.generation = 0
+                entry.active = None
                 entry.active_module_name = None
                 entry.supervisor = None
+                entry.cumulative_policy_errors = 0
+                entry.policy_rolled_back = False
+                entry.rollback_generation = 0
 
             entry.manager_ref = weakref.ref(manager)
             entry._builtin_name = builtin_name
             entry._builtin_version = builtin_version
-            if entry.active is None:
-                entry.active = ActivePolicy(
-                    engine_id=engine_id,
-                    generation=entry.generation,
-                    policy_name=builtin_name,
-                    policy_version=builtin_version,
-                    source_hash="builtin",
-                    source_origin="builtin",
-                )
+            entry.active = ActivePolicy(
+                engine_id=engine_id,
+                generation=entry.generation,
+                policy_name=builtin_name,
+                policy_version=builtin_version,
+                source_hash="builtin",
+                source_origin="builtin",
+            )
             metrics.set_active_generation(engine_id, entry.generation)
 
     def attach_idle_callback(
@@ -292,19 +306,22 @@ class PolicySwapRegistry:
             entry = self._entries.get(engine_id)
             return entry.active if entry is not None else None
 
-    def stats(
-        self, engine_id: str, reset: bool = False
-    ) -> OffloadPolicyStats:
+    def stats(self, engine_id: str, reset: bool = False) -> OffloadPolicyStats:
         with self._lock:
             entry = self._entries.get(engine_id)
             if entry is None or entry.manager_ref is None:
                 return OffloadPolicyStats()
             manager = entry.manager_ref()
             if manager is None:
+                # Mirror the live-manager branch's error accounting so a
+                # supervisor that accumulated errors before the manager was
+                # GC'd is still surfaced.
+                sup = entry.supervisor
+                sup_errors = sup.errors if sup is not None else 0
                 return OffloadPolicyStats(
                     window_start_generation=entry.generation,
                     active_generation=entry.generation,
-                    policy_errors=entry.cumulative_policy_errors,
+                    policy_errors=entry.cumulative_policy_errors + sup_errors,
                     policy_rolled_back=entry.policy_rolled_back,
                     rollback_generation=entry.rollback_generation,
                 )
@@ -409,7 +426,8 @@ class PolicySwapRegistry:
             # Step 2: construct the candidate.
             try:
                 new_policy = loaded.cls(
-                    cache_capacity=manager._num_blocks, **kwargs  # noqa: SLF001
+                    cache_capacity=manager._num_blocks,
+                    **kwargs,  # noqa: SLF001
                 )
             except Exception as e:  # noqa: BLE001
                 discard_module(loaded.module.__name__)
@@ -622,11 +640,31 @@ class PolicySwapRegistry:
             export_failed = True
 
         # Validate residents against the manager's allocated block range.
+        # Dedupe by *both* block_id and key: `LRUCachePolicy.import_state`
+        # calls `insert(key, block)` which overwrites on duplicate keys, so a
+        # second row sharing a key would silently win in the recovered policy
+        # while the first row's `block_id` would still be marked as
+        # recovered — leaking that slot from `_free_list` permanently.
         recovered_block_ids: set[int] = set()
         if not export_failed:
-            seen: set[int] = set()
+            seen_block_ids: set[int] = set()
+            seen_keys: set[OffloadKey] = set()
             valid_residents: list[tuple[OffloadKey, BlockStatus]] = []
             for key, block in residents:
+                if not isinstance(key, bytes):
+                    logger.warning(
+                        "Cold-recovery: dropping resident with invalid key type=%s.",
+                        type(key).__name__,
+                    )
+                    continue
+                if not isinstance(block, BlockStatus):
+                    logger.warning(
+                        "Cold-recovery: dropping resident for key=%r with "
+                        "invalid block type=%s.",
+                        key,
+                        type(block).__name__,
+                    )
+                    continue
                 bid = block.block_id
                 if bid < 0 or bid >= manager._num_allocated_blocks:  # noqa: SLF001
                     logger.warning(
@@ -636,13 +674,21 @@ class PolicySwapRegistry:
                         manager._num_allocated_blocks,  # noqa: SLF001
                     )
                     continue
-                if bid in seen:
+                if bid in seen_block_ids:
                     logger.warning(
                         "Cold-recovery: dropping duplicate resident block_id=%d.",
                         bid,
                     )
                     continue
-                seen.add(bid)
+                if key in seen_keys:
+                    logger.warning(
+                        "Cold-recovery: dropping duplicate resident key "
+                        "(block_id=%d would otherwise be orphaned).",
+                        bid,
+                    )
+                    continue
+                seen_block_ids.add(bid)
+                seen_keys.add(key)
                 recovered_block_ids.add(bid)
                 valid_residents.append((key, block))
             residents = valid_residents

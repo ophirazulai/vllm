@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Collection, Iterable
+from contextlib import suppress
 from typing import Literal
 
 from vllm.logger import init_logger
@@ -103,8 +104,11 @@ class CPUOffloadingManager(OffloadingManager):
         if req_context is None or req_context.policy_hints is None:
             return
         # `policy_hints` is shallow-copied at request init; iterating its
-        # keys is safe and bounded by what the user supplied.
-        self._stat_hint_keys.update(req_context.policy_hints.keys())
+        # keys is safe and bounded by what the user supplied. Keep only
+        # string keys so telemetry collection cannot fail on mixed key types.
+        for key in req_context.policy_hints:
+            if isinstance(key, str):
+                self._stat_hint_keys.add(key)
 
     # --- OffloadingManager interface ---
 
@@ -174,6 +178,85 @@ class CPUOffloadingManager(OffloadingManager):
             evicted = self._policy.evict(num_blocks_to_evict, protected, req_context)
             if evicted is None:
                 return None
+
+            malformed_reason: str | None = None
+            seen_evicted_keys: set[OffloadKey] = set()
+            seen_evicted_block_ids: set[int] = set()
+            if not isinstance(evicted, list):
+                malformed_reason = (
+                    "evict returned invalid type "
+                    f"{type(evicted).__name__} (expected list)"
+                )
+            elif len(evicted) != num_blocks_to_evict:
+                malformed_reason = (
+                    f"evict returned {len(evicted)} items for n={num_blocks_to_evict}"
+                )
+            else:
+                for item in evicted:
+                    if not isinstance(item, tuple) or len(item) != 2:
+                        malformed_reason = (
+                            "evict returned an entry that is not a (key, block) tuple"
+                        )
+                        break
+                    evict_key, evict_block = item
+                    if not isinstance(evict_key, bytes):
+                        malformed_reason = (
+                            "evict returned key with invalid type "
+                            f"{type(evict_key).__name__}"
+                        )
+                        break
+                    if evict_key in protected:
+                        malformed_reason = "evict returned a protected key"
+                        break
+                    if not isinstance(evict_block, BlockStatus):
+                        malformed_reason = (
+                            "evict returned block with invalid type "
+                            f"{type(evict_block).__name__}"
+                        )
+                        break
+                    if evict_block.ref_cnt != 0:
+                        malformed_reason = (
+                            "evict returned block with ref_cnt "
+                            f"{evict_block.ref_cnt} (expected 0)"
+                        )
+                        break
+                    block_id = evict_block.block_id
+                    if block_id < 0 or block_id >= self._num_allocated_blocks:
+                        malformed_reason = (
+                            "evict returned out-of-range block_id "
+                            f"{block_id} (allocated={self._num_allocated_blocks})"
+                        )
+                        break
+                    if evict_key in seen_evicted_keys:
+                        malformed_reason = "evict returned duplicate key entries"
+                        break
+                    if block_id in seen_evicted_block_ids:
+                        malformed_reason = "evict returned duplicate block IDs"
+                        break
+                    try:
+                        still_present = self._policy.get(evict_key) is not None
+                    except Exception as e:  # noqa: BLE001
+                        malformed_reason = (
+                            f"evict returned a key whose post-evict lookup raised: {e}"
+                        )
+                        break
+                    if still_present:
+                        malformed_reason = (
+                            "evict returned a key that is still present in the policy"
+                        )
+                        break
+                    seen_evicted_keys.add(evict_key)
+                    seen_evicted_block_ids.add(block_id)
+            if malformed_reason is not None:
+                logger.warning(
+                    "CachePolicy.evict returned malformed output: %s. "
+                    "Skipping store attempt.",
+                    malformed_reason,
+                )
+                with suppress(Exception):
+                    self._policy.record_write_error()
+                return None
+
             for key, block in evicted:
                 self._free_block(block)
                 to_evict.append(key)
@@ -215,18 +298,13 @@ class CPUOffloadingManager(OffloadingManager):
             for undo_key, undo_block in zip(
                 keys_to_store[:inserted], blocks[:inserted]
             ):
-                try:
+                with suppress(Exception):
                     self._policy.remove(undo_key)
-                except Exception:
-                    # remove must be best-effort; insert already failed
-                    pass
                 self._free_block(undo_block)
             for pending_block in blocks[inserted:]:
                 self._free_block(pending_block)
-            try:
+            with suppress(Exception):
                 self._policy.record_write_error()
-            except Exception:
-                pass
             return None
 
         self._stat_stores += len(keys_to_store)
@@ -266,10 +344,8 @@ class CPUOffloadingManager(OffloadingManager):
                             "CachePolicy.remove raised in failed-store cleanup: %s",
                             e,
                         )
-                        try:
+                        with suppress(Exception):
                             self._policy.record_write_error()
-                        except Exception:
-                            pass
                     self._free_block(block)
 
         if stored_keys and self.events is not None:

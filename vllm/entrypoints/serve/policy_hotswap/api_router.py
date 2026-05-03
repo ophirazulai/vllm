@@ -20,7 +20,6 @@ from vllm.entrypoints.serve.policy_hotswap.protocol import SwapOffloadPolicyRequ
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
-router = APIRouter()
 
 
 _LOCALHOST_HOSTS = frozenset(("127.0.0.1", "::1", "localhost"))
@@ -61,13 +60,16 @@ def attach_router(app: FastAPI) -> None:
         "into the engine process; do NOT enable in production."
     )
 
+    # Build a fresh router per attach so that calling `attach_router` more
+    # than once in a process (e.g. multiple FastAPI apps in tests) does not
+    # double-register routes on a shared module-level APIRouter.
+    router = APIRouter()
+
     @router.post(
         "/v1/swap_offload_policy",
         dependencies=[Depends(validate_json_request)],
     )
-    async def swap_offload_policy(
-        body: SwapOffloadPolicyRequest, raw_request: Request
-    ):
+    async def swap_offload_policy(body: SwapOffloadPolicyRequest, raw_request: Request):
         _ensure_localhost(raw_request)
         ec = engine_client(raw_request)
         try:
@@ -84,7 +86,7 @@ def attach_router(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=501,
                 detail=f"swap_offload_policy not implemented on this engine: {e}",
-            )
+            ) from e
         # Candidate-caused failures get HTTP 400 (bad input → bad code).
         # Internal failures bubble up as 500 via FastAPI's default handler.
         if not result.get("ok", False):

@@ -771,9 +771,7 @@ class EngineCore:
         IPC stays msgpack-safe and we never pickle user code. The loader
         runs *here*, in the engine process that owns `CPUOffloadingManager`.
         """
-        if not (self.vllm_config.additional_config or {}).get(
-            "enable_policy_hotswap"
-        ):
+        if not (self.vllm_config.additional_config or {}).get("enable_policy_hotswap"):
             return {
                 "ok": False,
                 "generation": 0,
@@ -798,6 +796,9 @@ class EngineCore:
             SwapResult,
         )
 
+        registry = PolicySwapRegistry.singleton()
+        engine_id = self.vllm_config.instance_id
+
         loader = PolicyLoader()
         try:
             loaded = loader.load(
@@ -806,15 +807,20 @@ class EngineCore:
                 source=payload.get("source"),
             )
         except PolicyLoadError as e:
+            # Loader failed before reaching the registry; mirror the
+            # registry's contract that `previous_generation` reflects the
+            # current generation (0 only if never swapped).
+            active = registry.current(engine_id)
+            current_gen = active.generation if active is not None else 0
             return SwapResult(
                 ok=False,
-                generation=0,
-                previous_generation=0,
+                generation=current_gen,
+                previous_generation=current_gen,
                 error=str(e),
             ).to_dict()
 
-        result = PolicySwapRegistry.singleton().swap(
-            engine_id=self.vllm_config.instance_id,
+        result = registry.swap(
+            engine_id=engine_id,
             loaded=loaded,
             policy_kwargs=payload.get("policy_kwargs") or {},
             policy_name=payload.get("name"),
@@ -832,9 +838,11 @@ class EngineCore:
     def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
         from vllm.v1.kv_offload.cpu.policies.registry import PolicySwapRegistry
 
-        return PolicySwapRegistry.singleton().stats(
-            self.vllm_config.instance_id, reset=reset
-        ).to_dict()
+        return (
+            PolicySwapRegistry.singleton()
+            .stats(self.vllm_config.instance_id, reset=reset)
+            .to_dict()
+        )
 
     def save_sharded_state(
         self,
