@@ -185,18 +185,23 @@ class PolicySwapRegistry:
     def current(self, engine_id: str) -> ActivePolicy | None: ...
 ```
 
-`attach` is called from [`CPUOffloadingSpec.get_manager()`](../vllm/v1/kv_offload/cpu/spec.py), the lazy single-shot construction site. Keep the bare `CPUOffloadingManager` in a local variable, attach that inner manager with `self.vllm_config.instance_id`, then optionally wrap it in `FilterReusedOffloadingManager`. The registry stores a weak ref to the inner `CPUOffloadingManager` (whose `_policy` is the swap target), not to the wrapper; the wrapper delegates `lookup`/`prepare_*` and has no policy state of its own. Hooking the spec rather than the manager's `__init__` means unit tests that construct `CPUOffloadingManager` directly do not pollute the singleton, and the registry sees exactly one attach per configured engine.
+`attach` is called from [`CPUOffloadingSpec.get_manager()`](../vllm/v1/kv_offload/cpu/spec.py), the lazy single-shot construction site, **gated on `self.vllm_config.additional_config.get("enable_policy_hotswap")`**. Keep the bare `CPUOffloadingManager` in a local variable; if the gate is set, attach that inner manager with `self.vllm_config.instance_id`; then optionally wrap it in `FilterReusedOffloadingManager`. The registry stores a weak ref to the inner `CPUOffloadingManager` (whose `_policy` is the swap target), not to the wrapper; the wrapper delegates `lookup`/`prepare_*` and has no policy state of its own. Hooking the spec rather than the manager's `__init__` means unit tests that construct `CPUOffloadingManager` directly do not pollute the singleton, and the registry sees exactly one attach per configured engine. Default-off deploys skip the registry entirely — no singleton entries, no idle callback, zero overhead — which matches the §5 "default-off" security posture.
 
-The idle-rollback callback is attached separately from `EngineCore.__init__`, after `self._idle_state_callbacks` has been initialized:
+The idle-rollback callback is attached separately from `EngineCore.__init__`, after `self._idle_state_callbacks` has been initialized, **gated on the same `additional_config["enable_policy_hotswap"]` flag** so default-off engines never create registry entries:
 
 ```python
-PolicySwapRegistry.singleton().attach_idle_callback(
-    self.vllm_config.instance_id,
-    lambda cb: self._idle_state_callbacks.append(lambda _engine: cb()),
-)
+if self.vllm_config.additional_config.get("enable_policy_hotswap"):
+    PolicySwapRegistry.singleton().attach_idle_callback(
+        self.vllm_config.instance_id,
+        lambda cb: self._idle_state_callbacks.append(lambda _engine: cb()),
+    )
 ```
 
+The callback signature matches `_notify_idle_state_callbacks` at [core.py:1227-1228](../vllm/v1/engine/core.py#L1227-L1228), which calls `callback(self)` with the engine as the sole positional argument; the inner `lambda _engine: cb()` accepts and discards it.
+
 This avoids threading an `EngineCore` reference through `KVConnectorFactory`, `OffloadingConnector`, `OffloadingConnectorScheduler`, and `OffloadingSpec`. The connector spec may be constructed *after* `EngineCore.__init__` finishes setting up `_idle_state_callbacks`, so `attach_idle_callback` is order-tolerant: it stores the enqueue function on the entry (creating a placeholder entry if `attach()` has not yet run), and the later `attach()` call preserves any enqueue function already present. Symmetrically, `attach()` arriving first leaves `enqueue_idle_callback=None` until `attach_idle_callback` fills it in. Either ordering yields a fully wired entry; only the absence of *both* calls leaves rollback to the next-swap path (§14.2 point 1).
+
+**Saturation caveat.** `_notify_idle_state_callbacks` is drained inside `_process_input_queue` only when `not self.has_work()` ([core.py:1178-1180](../vllm/v1/engine/core.py#L1178-L1180)). On a permanently saturated busy loop the idle path may not fire for the duration of a CORAL candidate's run; rollback then waits for the next external swap (point 1 in §14.2). The supervisor still suppresses read-side errors during the wait, so saturation does not crash the engine — only delays recovery.
 
 Different `engine_id` values coexist in the registry. If `attach` is called twice for the same `engine_id`, the registry logs a warning, replaces the weak ref, and drops any active synthetic module owned by the old entry.
 
@@ -404,13 +409,13 @@ The grader spins up `LLM` once per process (or reuses a daemonized one across at
 | [vllm/v1/kv_offload/cpu/manager.py](../vllm/v1/kv_offload/cpu/manager.py) | Maintain `OffloadPolicyStats` (including `hint_keys` accumulation); expose `take_policy_stats(reset=False, active_generation=...)`. Widen `CPUOffloadingManager.touch` to accept `req_context` to match the new ABC. Thread `req_context` from `lookup` / `prepare_load` / `prepare_store` / `touch` into `_policy.insert` / `touch` / `evict` per §16, including the §14.3 hardened insert loop. Wrap the `prepare_store` insert loop to free pre-allocated blocks if `_policy.insert` raises (§14.3). |
 | [vllm/v1/kv_offload/base.py](../vllm/v1/kv_offload/base.py) | Add `policy_hints: dict[str, Any] \| None = None` to `ReqContext` (§16.2); widen the `OffloadingManager.touch` ABC to take `req_context: ReqContext` so policy `touch` can receive request scope (§16.4). |
 | [vllm/v1/kv_offload/reuse_manager.py](../vllm/v1/kv_offload/reuse_manager.py) | Update `FilterReusedOffloadingManager.touch` to delegate the widened `touch(keys, req_context)` signature (§16.4). No other behavior change; the wrapper has no policy state. |
-| [vllm/v1/request.py](../vllm/v1/request.py) | Mirror the existing `kv_transfer_params` extraction at lines 113-116: lift `policy_hints` from `sampling_params.extra_args`, shallow-copy and inject the reserved `_request_id` key, store on a new `Request.policy_hints: dict[str, Any] \| None` attribute (§16.1). |
+| [vllm/v1/request.py](../vllm/v1/request.py) | Initialize `self.policy_hints: dict[str, Any] \| None = None` immediately after [request.py:101](../vllm/v1/request.py#L101) so the attribute exists for pooling-only requests too. Inside the existing `extra_args` block at lines 113-116, additionally lift `policy_hints`, validate via `dict(raw_hints)`, inject the reserved `_request_id` key, and assign to `self.policy_hints` (§16.1). |
 | [vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py](../vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py) | In `RequestOffloadState.__post_init__` (line 141), populate `ReqContext.policy_hints=self.req.policy_hints` alongside `kv_transfer_params`. Inside `_touch` (lines 294 and 303), pass `req_status.req_context` into both widened `manager.touch(...)` calls (full-attention and sliding-window branches). |
-| [vllm/v1/kv_offload/cpu/spec.py](../vllm/v1/kv_offload/cpu/spec.py) | In `get_manager()`, call `PolicySwapRegistry.singleton().attach(self.vllm_config.instance_id, inner)` on the bare `CPUOffloadingManager` *before* it is optionally wrapped by `FilterReusedOffloadingManager`. |
+| [vllm/v1/kv_offload/cpu/spec.py](../vllm/v1/kv_offload/cpu/spec.py) | In `get_manager()`, when `self.vllm_config.additional_config.get("enable_policy_hotswap")`, call `PolicySwapRegistry.singleton().attach(self.vllm_config.instance_id, inner)` on the bare `CPUOffloadingManager` *before* it is optionally wrapped by `FilterReusedOffloadingManager`. Skip the attach silently when the flag is unset (default-off). |
 | [vllm/envs.py](../vllm/envs.py) | Add `VLLM_ENABLE_POLICY_HOTSWAP`, `VLLM_POLICY_HOTSWAP_ALLOW_REMOTE`. |
 | [vllm/engine/arg_utils.py](../vllm/engine/arg_utils.py) | Add `enable_policy_hotswap: bool = False` field on `EngineArgs` and the matching `--enable-policy-hotswap` CLI flag; in `create_engine_config()` resolve the effective value (CLI flag OR `VLLM_ENABLE_POLICY_HOTSWAP`) and store it under `additional_config["enable_policy_hotswap"]` so the engine process sees the same gate. Raise from `create_engine_config()` if the flag is set together with `data_parallel_size > 1` (per §7). |
 | [vllm/engine/protocol.py](../vllm/engine/protocol.py) | Add async `swap_offload_policy`, current-policy, and stats methods to the `EngineClient` protocol for serve routes. |
-| [vllm/v1/engine/core.py](../vllm/v1/engine/core.py) | Add `swap_offload_policy(payload)`, `get_offload_policy()`, and `get_offload_policy_stats(reset=False)` utility methods on `EngineCore`; after `_idle_state_callbacks` is initialized, register the policy registry idle-callback enqueue hook. |
+| [vllm/v1/engine/core.py](../vllm/v1/engine/core.py) | Add `swap_offload_policy(payload)`, `get_offload_policy()`, and `get_offload_policy_stats(reset=False)` utility methods on `EngineCore`; after `_idle_state_callbacks` is initialized, when `additional_config["enable_policy_hotswap"]` is set, register the policy registry idle-callback enqueue hook. |
 | [vllm/v1/engine/core_client.py](../vllm/v1/engine/core_client.py) | Add sync/async swap, current-policy, and stats forwarding methods, including `InprocClient` direct calls. |
 | [vllm/v1/engine/llm_engine.py](../vllm/v1/engine/llm_engine.py) | Public swap/current-policy/stats forwarding to client. |
 | [vllm/v1/engine/async_llm.py](../vllm/v1/engine/async_llm.py) | Public async swap/current-policy/stats forwarding to client. |
@@ -589,7 +594,7 @@ Why the two-point design: rollback at idle is fast (sub-step); rollback at next-
 2. Try `residents = list(supervisor.inner.export_state())`.
 3. Validate that every resident `BlockStatus.block_id` is unique and in `range(manager._num_allocated_blocks)`.
 4. Build `recovered = LRUCachePolicy(cache_capacity=manager._num_blocks)` and call `recovered.import_state(residents)`.
-5. Reconcile the block pool: `manager._free_list = sorted(set(range(manager._num_allocated_blocks)) - recovered_block_ids)`.
+5. Reconcile the block pool: `manager._free_list = sorted(set(range(manager._num_allocated_blocks)) - recovered_block_ids)`. **In-flight caveat:** if the buggy policy silently dropped a block whose `BlockStatus.ref_cnt > 0` (in-flight `prepare_load` whose `complete_load` has not yet arrived), that block_id is NOT in `recovered_block_ids` and reconciliation will return it to the free list. A subsequent `prepare_store` may then reallocate the same `block_id` and overwrite the worker's in-flight CPU buffer before the load finishes, corrupting the GPU read. The eventual `complete_load` will trip the `block is not None` assert at [manager.py:99](../vllm/v1/kv_offload/cpu/manager.py#L99) — loud failure, not silent — but corruption can occur in the window between reallocation and the assert. Phase 1 accepts this: a buggy policy that loses in-flight blocks is precisely the failure mode `SupervisedCachePolicy` exists to *contain*, not to *paper over*. CORAL graders should treat `policy_rolled_back=True` as a strong negative signal regardless of measured hit rate, since the in-flight window may have produced corrupt outputs.
 6. Install `manager._policy = recovered`. Drop the rolled-back candidate's `sys.modules` entry using the `rolled_back_module` captured in step 1 — call `sys.modules.pop(rolled_back_module, None)` so the operation is no-op-safe if a concurrent path has already removed the entry. Then clear `entry.supervisor` and `entry.active_module_name` (set to `None`). Increment `entry.generation` and set `entry.active` to built-in LRU metadata with `source_origin=f"rollback:{rollback_generation}"` and `source_hash="builtin"`. The capture-then-clear order matters: the next forward swap's "remove the previous active synthetic module" step (§6 step 8) keys on `entry.active_module_name`, and a stale value would otherwise target a module already removed during rollback. (§6 step 8 should likewise use `sys.modules.pop(name, None)` rather than bare `del` for the same reason.)
 7. Set sticky stats fields on the entry: `policy_rolled_back=True`, `rollback_generation=<rolled-back candidate generation>`, and `cumulative_policy_errors += supervisor._errors`. These persist across subsequent forward swaps and are cleared only by `take_policy_stats(reset=True)`.
 
@@ -685,27 +690,28 @@ The plumbing is mostly free: every offloading-manager call site already receives
 
 Both `CompletionRequest` and `ChatCompletionRequest` already expose `vllm_xargs: dict[str, str|int|float] | None` as the documented user-extension field. The OpenAI-compat layer merges it into `SamplingParams.extra_args` at [vllm/entrypoints/openai/completion/protocol.py:292-295](../vllm/entrypoints/openai/completion/protocol.py#L292-L295). Offline `LLM` callers populate `SamplingParams.extra_args["policy_hints"]` directly. We pick the sub-key `policy_hints` and treat it as opaque `dict[str, Any]` end-to-end.
 
-Mirror the existing `kv_transfer_params` extraction in `Request.__init__` at [vllm/v1/request.py:113-116](../vllm/v1/request.py#L113-L116). `__init__` is the right hook — `Request.from_engine_core_request` is a thin classmethod that forwards everything to `__init__`, and `self.request_id` is already set by the time we reach the extraction block:
+Mirror the existing `kv_transfer_params` extraction in `Request.__init__` at [vllm/v1/request.py:113-116](../vllm/v1/request.py#L113-L116). `__init__` is the right hook — `Request.from_engine_core_request` is a thin classmethod that forwards everything to `__init__`, and `self.request_id` is already set by the time we reach the extraction block. Two changes:
+
+1. Initialize `self.policy_hints: dict[str, Any] | None = None` immediately after the existing `self.kv_transfer_params: dict[str, Any] | None = None` at [request.py:101](../vllm/v1/request.py#L101). This guarantees the attribute exists for *all* request kinds — pooling-only requests skip the sampling branch entirely, and a missing attribute would `AttributeError` later in the offloading scheduler.
+2. Inside the existing `if sampling_params.extra_args is not None:` block (alongside the `self.kv_transfer_params = ...` assignment), add the hint extraction:
 
 ```python
-# vllm/v1/request.py — alongside kv_transfer_params, inside __init__
-if sampling_params.extra_args is not None:
-    self.kv_transfer_params = sampling_params.extra_args.get("kv_transfer_params")
-    raw_hints = sampling_params.extra_args.get("policy_hints")
-    if raw_hints is not None:
-        # Shallow copy avoids mutating caller-owned state; the reserved
-        # `_request_id` key is injected for policies that need a stable
-        # per-request handle (see "Reserved key" below).
-        hints = dict(raw_hints)
-        hints["_request_id"] = self.request_id
-        self.policy_hints: dict[str, Any] | None = hints
-    else:
-        self.policy_hints = None
-else:
-    self.policy_hints = None
+# vllm/v1/request.py — append to the existing extra_args block at lines 113-116
+raw_hints = sampling_params.extra_args.get("policy_hints")
+if raw_hints is not None:
+    # Validate at the carrier so malformed input fails the request, not the
+    # policy. dict(raw_hints) raises TypeError on non-dict / non-mapping
+    # input; the request entrypoint converts this into an HTTP 400 / Python
+    # ValueError before the request reaches the engine. Shallow copy avoids
+    # mutating caller-owned state; the reserved `_request_id` key is
+    # injected for policies that need a stable per-request handle
+    # (see "Reserved key" below).
+    hints = dict(raw_hints)
+    hints["_request_id"] = self.request_id
+    self.policy_hints = hints
 ```
 
-No HTTP schema change is required. Operators who don't enable hot-swap pay nothing — `policy_hints` is read but ignored when no evolved policy consumes it (built-ins discard `req_context`).
+No HTTP schema change is required. Operators who don't enable hot-swap pay nothing — `policy_hints` is read but ignored when no evolved policy consumes it (built-ins discard `req_context`). Pooling-only requests cannot supply hints because `extra_args` is sampling-only today; this matches the existing `kv_transfer_params` restriction and is acceptable because offloading exists to extend KV-cache reuse for generative workloads.
 
 **Reserved key.** Per the snippet above, `Request.__init__` shallow-copies the user-supplied `policy_hints` dict and injects `_request_id = self.request_id`. Policies that need a stable per-request handle (e.g. to record "request X inserted these blocks") read `hints.get("_request_id")` instead of inventing their own. The shallow copy avoids mutating user-supplied state. Names beginning with `_` are reserved for future framework use; evolved schemas must not collide.
 
