@@ -61,11 +61,30 @@ class CPUOffloadingSpec(OffloadingSpec):
                 kv_events_config is not None and kv_events_config.enable_kv_cache_events
             )
 
-            self._manager = CPUOffloadingManager(
+            inner = CPUOffloadingManager(
                 num_blocks=self.num_blocks,
                 cache_policy=self.eviction_policy,  # type: ignore[arg-type]
                 enable_events=enable_events,
             )
+
+            # Hot-swap registry attach — gated default-off (design §6).
+            # We attach the *inner* manager (whose `_policy` is the swap
+            # target), not the wrapper, so the registry can mutate the
+            # policy directly.
+            additional = self.vllm_config.additional_config or {}
+            if additional.get("enable_policy_hotswap"):
+                from vllm.v1.kv_offload.cpu.policies.registry import (
+                    PolicySwapRegistry,
+                )
+
+                PolicySwapRegistry.singleton().attach(
+                    self.vllm_config.instance_id,
+                    inner,
+                    builtin_name=self.eviction_policy,
+                    builtin_version="builtin",
+                )
+
+            self._manager = inner
 
             # store_threshold: how many times a block must appear in lookup()
             # before it is eligible for CPU offloading.  Values < 2 disable

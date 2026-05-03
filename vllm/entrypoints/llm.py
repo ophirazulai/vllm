@@ -1489,6 +1489,42 @@ class LLM:
             reset_running_requests, reset_connector
         )
 
+    def swap_offload_policy(
+        self,
+        source_path: str | None = None,
+        module: str | None = None,
+        source: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+        policy_kwargs: dict | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Hot-swap the CPU-offload `CachePolicy`.
+
+        Requires `enable_policy_hotswap=True` (or
+        `VLLM_ENABLE_POLICY_HOTSWAP=1`). See
+        `design/evolved_cpu_offloading.md` §8.2.
+        """
+        return self.llm_engine.swap_offload_policy(
+            source_path=source_path,
+            module=module,
+            source=source,
+            name=name,
+            version=version,
+            policy_kwargs=policy_kwargs,
+            dry_run=dry_run,
+        )
+
+    def get_offload_policy(self) -> dict | None:
+        """Return the active CPU-offload policy metadata, or None."""
+        return self.llm_engine.get_offload_policy()
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict:
+        """Return CPU-offload policy stats. Pass `reset=True` to begin a
+        new measurement window (used by CORAL between candidate runs).
+        """
+        return self.llm_engine.get_offload_policy_stats(reset)
+
     def sleep(self, level: int = 1, mode: PauseMode = "abort"):
         """
         Put the engine to sleep. The engine should not process any requests.

@@ -103,6 +103,8 @@ if TYPE_CHECKING:
     VLLM_USE_MEGA_AOT_ARTIFACT: bool = False
     VLLM_USE_TRITON_AWQ: bool = False
     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
+    VLLM_ENABLE_POLICY_HOTSWAP: bool = False
+    VLLM_POLICY_HOTSWAP_ALLOW_REMOTE: bool = False
     VLLM_SKIP_P2P_CHECK: bool = False
     VLLM_DISABLED_KERNELS: list[str] = []
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
@@ -962,6 +964,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If set, allow loading or unloading lora adapters in runtime,
     "VLLM_ALLOW_RUNTIME_LORA_UPDATING": lambda: (
         os.environ.get("VLLM_ALLOW_RUNTIME_LORA_UPDATING", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # If set, allow hot-swapping the CPU-offload `CachePolicy` at runtime
+    # via `POST /v1/swap_offload_policy` or `LLM.swap_offload_policy(...)`.
+    # SECURITY: this `exec()`s untrusted Python in-process. Default off.
+    # See `design/evolved_cpu_offloading.md` §5.
+    "VLLM_ENABLE_POLICY_HOTSWAP": lambda: (
+        os.environ.get("VLLM_ENABLE_POLICY_HOTSWAP", "0").strip().lower()
+        in ("1", "true")
+    ),
+    # If set together with VLLM_ENABLE_POLICY_HOTSWAP, allow non-localhost
+    # HTTP clients to call /v1/swap_offload_policy. Default off — even
+    # when hot-swap is enabled, only `127.0.0.1` / `::1` callers can swap.
+    "VLLM_POLICY_HOTSWAP_ALLOW_REMOTE": lambda: (
+        os.environ.get("VLLM_POLICY_HOTSWAP_ALLOW_REMOTE", "0").strip().lower()
         in ("1", "true")
     ),
     # We assume drivers can report p2p status correctly.

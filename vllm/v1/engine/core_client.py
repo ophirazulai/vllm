@@ -185,6 +185,28 @@ class EngineCoreClient(ABC):
     def pin_lora(self, lora_id: int) -> bool:
         raise NotImplementedError
 
+    def swap_offload_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_offload_policy(self) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def swap_offload_policy_async(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def get_offload_policy_async(self) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def get_offload_policy_stats_async(
+        self, reset: bool = False
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
     def save_sharded_state(
         self, path: str, pattern: str | None = None, max_size: int | None = None
     ) -> None:
@@ -345,6 +367,15 @@ class InprocClient(EngineCoreClient):
 
     def pin_lora(self, lora_id: int) -> bool:
         return self.engine_core.pin_lora(lora_id)
+
+    def swap_offload_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.engine_core.swap_offload_policy(payload)
+
+    def get_offload_policy(self) -> dict[str, Any] | None:
+        return self.engine_core.get_offload_policy()
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        return self.engine_core.get_offload_policy_stats(reset)
 
     def save_sharded_state(
         self, path: str, pattern: str | None = None, max_size: int | None = None
@@ -857,6 +888,15 @@ class SyncMPClient(MPClient):
     def pin_lora(self, lora_id: int) -> bool:
         return self.call_utility("pin_lora", lora_id)
 
+    def swap_offload_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call_utility("swap_offload_policy", payload)
+
+    def get_offload_policy(self) -> dict[str, Any] | None:
+        return self.call_utility("get_offload_policy")
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        return self.call_utility("get_offload_policy_stats", reset)
+
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
         self.call_utility("sleep", level, mode)
 
@@ -1116,6 +1156,19 @@ class AsyncMPClient(MPClient):
 
     async def pin_lora_async(self, lora_id: int) -> bool:
         return await self.call_utility_async("pin_lora", lora_id)
+
+    async def swap_offload_policy_async(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self.call_utility_async("swap_offload_policy", payload)
+
+    async def get_offload_policy_async(self) -> dict[str, Any] | None:
+        return await self.call_utility_async("get_offload_policy")
+
+    async def get_offload_policy_stats_async(
+        self, reset: bool = False
+    ) -> dict[str, Any]:
+        return await self.call_utility_async("get_offload_policy_stats", reset)
 
     async def save_sharded_state_async(
         self, path: str, pattern: str | None = None, max_size: int | None = None

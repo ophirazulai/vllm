@@ -100,6 +100,12 @@ class Request:
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: dict[str, Any] | None = None
 
+        # Per-request opaque hint dict consumed by evolved CPU-offloading
+        # policies (see design/evolved_cpu_offloading.md §16). Initialized
+        # here so the attribute exists on every code path — including
+        # pooling-only requests, which skip the sampling branch below.
+        self.policy_hints: dict[str, Any] | None = None
+
         if pooling_params is not None:
             # Pooling models.
             self.max_tokens = 1
@@ -114,6 +120,17 @@ class Request:
                 self.kv_transfer_params = sampling_params.extra_args.get(
                     "kv_transfer_params"
                 )
+                raw_hints = sampling_params.extra_args.get("policy_hints")
+                if raw_hints is not None:
+                    # `dict(raw_hints)` raises TypeError on non-mapping
+                    # input — let it propagate so the request entrypoint
+                    # surfaces a 400 / ValueError before the engine sees
+                    # it. The shallow copy avoids mutating caller-owned
+                    # state; the reserved `_request_id` key gives policies
+                    # a stable per-request handle (design §16.1).
+                    hints = dict(raw_hints)
+                    hints["_request_id"] = self.request_id
+                    self.policy_hints = hints
         else:
             raise ValueError("sampling_params and pooling_params can't both be unset")
 

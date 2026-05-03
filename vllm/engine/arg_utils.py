@@ -509,6 +509,11 @@ class EngineArgs:
     max_logprobs: int = ModelConfig.max_logprobs
     logprobs_mode: LogprobsMode = ModelConfig.logprobs_mode
     disable_log_stats: bool = False
+    # Hot-swap CPU-offloading `CachePolicy` at runtime via
+    # `LLM.swap_offload_policy(...)` / `POST /v1/swap_offload_policy`.
+    # SECURITY: this `exec()`s untrusted Python in-process; default off.
+    # See `design/evolved_cpu_offloading.md` §5.
+    enable_policy_hotswap: bool = False
     aggregate_engine_logging: bool = False
     revision: str | None = ModelConfig.revision
     code_revision: str | None = ModelConfig.code_revision
@@ -1442,6 +1447,19 @@ class EngineArgs:
         )
 
         parser.add_argument(
+            "--enable-policy-hotswap",
+            action="store_true",
+            help=(
+                "Allow runtime hot-swap of the CPU-offload CachePolicy via "
+                "POST /v1/swap_offload_policy or LLM.swap_offload_policy(...). "
+                "SECURITY: enabling this lets the operator load arbitrary "
+                "Python code into the engine process; do NOT enable in "
+                "production. Localhost-only by default; see "
+                "VLLM_POLICY_HOTSWAP_ALLOW_REMOTE."
+            ),
+        )
+
+        parser.add_argument(
             "--aggregate-engine-logging",
             action="store_true",
             help="Log aggregate rather than per-engine statistics "
@@ -2145,6 +2163,20 @@ class EngineArgs:
 
         if self.gdn_prefill_backend is not None:
             self.additional_config["gdn_prefill_backend"] = self.gdn_prefill_backend
+
+        # Resolve hot-swap gate: CLI flag OR env var. Stored under
+        # additional_config so the engine process sees the same gate.
+        # See `design/evolved_cpu_offloading.md` §5 / §7.
+        hotswap_enabled = self.enable_policy_hotswap or envs.VLLM_ENABLE_POLICY_HOTSWAP
+        if hotswap_enabled:
+            if self.data_parallel_size > 1:
+                raise ValueError(
+                    "--enable-policy-hotswap is incompatible with "
+                    "data_parallel_size > 1: existing async DP utility paths "
+                    "do not aggregate per-engine results, so a swap would "
+                    "land on only one rank. See design §7."
+                )
+            self.additional_config["enable_policy_hotswap"] = True
 
         config = VllmConfig(
             model_config=model_config,

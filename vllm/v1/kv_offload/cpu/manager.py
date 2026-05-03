@@ -3,6 +3,7 @@
 from collections.abc import Collection, Iterable
 from typing import Literal
 
+from vllm.logger import init_logger
 from vllm.v1.kv_offload.base import (
     LoadStoreSpec,
     OffloadingEvent,
@@ -15,6 +16,8 @@ from vllm.v1.kv_offload.cpu.common import CPULoadStoreSpec
 from vllm.v1.kv_offload.cpu.policies.arc import ARCCachePolicy
 from vllm.v1.kv_offload.cpu.policies.base import BlockStatus, CachePolicy
 from vllm.v1.kv_offload.cpu.policies.lru import LRUCachePolicy
+
+logger = init_logger(__name__)
 
 _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
     "lru": LRUCachePolicy,
@@ -51,6 +54,20 @@ class CPUOffloadingManager(OffloadingManager):
             )
         self._policy: CachePolicy = policy_cls(cache_capacity=num_blocks)
 
+        # --- counters consumed by `take_policy_stats` (see design §8.3) ---
+        self._stat_lookups: int = 0
+        self._stat_hits: int = 0
+        self._stat_stores: int = 0
+        self._stat_evictions: int = 0
+        self._stat_loads: int = 0
+        # Window in which stats are accumulated. Updated by the registry on
+        # each forward swap and by `take_policy_stats(reset=True)`.
+        self._stat_window_start_generation: int = 0
+        # Top-level keys observed in `req_context.policy_hints` since last
+        # reset. Used as a smoke signal that a CORAL client shim actually
+        # populated hints; values are not exposed.
+        self._stat_hint_keys: set[str] = set()
+
     # --- block pool ---
 
     def _get_num_free_blocks(self) -> int:
@@ -82,17 +99,30 @@ class CPUOffloadingManager(OffloadingManager):
     ) -> CPULoadStoreSpec:
         return CPULoadStoreSpec([block.block_id for block in blocks])
 
+    def _record_hint_keys(self, req_context: ReqContext | None) -> None:
+        if req_context is None or req_context.policy_hints is None:
+            return
+        # `policy_hints` is shallow-copied at request init; iterating its
+        # keys is safe and bounded by what the user supplied.
+        self._stat_hint_keys.update(req_context.policy_hints.keys())
+
     # --- OffloadingManager interface ---
 
     def lookup(self, key: OffloadKey, req_context: ReqContext) -> bool | None:
+        self._stat_lookups += 1
+        self._record_hint_keys(req_context)
         block = self._policy.get(key)
-        return block is not None and block.is_ready
+        is_hit = block is not None and block.is_ready
+        if is_hit:
+            self._stat_hits += 1
+        return is_hit
 
     def prepare_load(
         self,
         keys: Collection[OffloadKey],
         req_context: ReqContext,
     ) -> LoadStoreSpec:
+        self._record_hint_keys(req_context)
         blocks = []
         for key in keys:
             block = self._policy.get(key)
@@ -100,10 +130,16 @@ class CPUOffloadingManager(OffloadingManager):
             assert block.is_ready, f"Block {key!r} is not ready for reading"
             block.ref_cnt += 1
             blocks.append(block)
+        self._stat_loads += len(blocks)
         return self._get_load_store_spec(keys, blocks)
 
-    def touch(self, keys: Collection[OffloadKey]) -> None:
-        self._policy.touch(keys)
+    def touch(
+        self,
+        keys: Collection[OffloadKey],
+        req_context: ReqContext,
+    ) -> None:
+        self._record_hint_keys(req_context)
+        self._policy.touch(keys, req_context)
 
     def complete_load(self, keys: Collection[OffloadKey]) -> None:
         for key in keys:
@@ -117,6 +153,7 @@ class CPUOffloadingManager(OffloadingManager):
         keys: Collection[OffloadKey],
         req_context: ReqContext,
     ) -> PrepareStoreOutput | None:
+        self._record_hint_keys(req_context)
         # filter out blocks that are already stored
         keys_to_store = [k for k in keys if self._policy.get(k) is None]
 
@@ -134,12 +171,13 @@ class CPUOffloadingManager(OffloadingManager):
             # Blocks from the original input are excluded from eviction candidates:
             # a block that was already stored must remain in the cache after this call.
             protected = set(keys)
-            evicted = self._policy.evict(num_blocks_to_evict, protected)
+            evicted = self._policy.evict(num_blocks_to_evict, protected, req_context)
             if evicted is None:
                 return None
             for key, block in evicted:
                 self._free_block(block)
                 to_evict.append(key)
+            self._stat_evictions += len(evicted)
 
         if to_evict and self.events is not None:
             self.events.append(
@@ -155,8 +193,43 @@ class CPUOffloadingManager(OffloadingManager):
             "Block pool did not allocate the expected number of blocks"
         )
 
-        for key, block in zip(keys_to_store, blocks):
-            self._policy.insert(key, block)
+        # Hardened insert loop (design §14.3): if `_policy.insert` raises
+        # mid-loop, undo successful inserts, free every allocated block,
+        # notify the policy via `record_write_error`, and report a
+        # recoverable `prepare_store -> None` rather than crashing the
+        # engine. Built-in policies inherit a no-op `record_write_error`;
+        # `SupervisedCachePolicy` uses it to advance its error budget.
+        inserted = 0
+        try:
+            for key, block in zip(keys_to_store, blocks):
+                self._policy.insert(key, block, req_context)
+                inserted += 1
+        except Exception as e:  # noqa: BLE001 - propagated to grader via stats
+            logger.warning(
+                "CachePolicy.insert raised mid-prepare_store after %d/%d "
+                "successful inserts: %s. Rolling back.",
+                inserted,
+                len(keys_to_store),
+                e,
+            )
+            for undo_key, undo_block in zip(
+                keys_to_store[:inserted], blocks[:inserted]
+            ):
+                try:
+                    self._policy.remove(undo_key)
+                except Exception:
+                    # remove must be best-effort; insert already failed
+                    pass
+                self._free_block(undo_block)
+            for pending_block in blocks[inserted:]:
+                self._free_block(pending_block)
+            try:
+                self._policy.record_write_error()
+            except Exception:
+                pass
+            return None
+
+        self._stat_stores += len(keys_to_store)
 
         # build store specs for allocated blocks
         store_spec = self._get_load_store_spec(keys_to_store, blocks)
@@ -182,7 +255,21 @@ class CPUOffloadingManager(OffloadingManager):
             for key in keys:
                 block = self._policy.get(key)
                 if block is not None and not block.is_ready:
-                    self._policy.remove(key)
+                    # Guard `_policy.remove`: a buggy evolved policy must
+                    # not crash the engine here. Always free the block,
+                    # best-effort remove from the policy, surface the
+                    # error to the supervisor, and continue.
+                    try:
+                        self._policy.remove(key)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "CachePolicy.remove raised in failed-store cleanup: %s",
+                            e,
+                        )
+                        try:
+                            self._policy.record_write_error()
+                        except Exception:
+                            pass
                     self._free_block(block)
 
         if stored_keys and self.events is not None:
@@ -198,3 +285,38 @@ class CPUOffloadingManager(OffloadingManager):
         if self.events is not None:
             yield from self.events
             self.events.clear()
+
+    # ------------------------------------------------------------------
+    # Hot-swap stats hook (see design §8.3 / §14.5).
+    # ------------------------------------------------------------------
+
+    def take_policy_stats(
+        self, reset: bool, active_generation: int
+    ) -> dict[str, object]:
+        """Return a msgpack-safe snapshot of policy/manager counters.
+
+        Returns a plain dict (not a typed struct) so the registry can
+        compose it with supervisor / sticky-rollback fields without a
+        circular import. The registry is responsible for the final
+        `OffloadPolicyStats` shape.
+        """
+        snapshot: dict[str, object] = {
+            "lookups": self._stat_lookups,
+            "hits": self._stat_hits,
+            "stores": self._stat_stores,
+            "evictions": self._stat_evictions,
+            "loads": self._stat_loads,
+            "hit_rate": self._stat_hits / max(self._stat_lookups, 1),
+            "window_start_generation": self._stat_window_start_generation,
+            "active_generation": active_generation,
+            "hint_keys": tuple(sorted(self._stat_hint_keys)),
+        }
+        if reset:
+            self._stat_lookups = 0
+            self._stat_hits = 0
+            self._stat_stores = 0
+            self._stat_evictions = 0
+            self._stat_loads = 0
+            self._stat_window_start_generation = active_generation
+            self._stat_hint_keys.clear()
+        return snapshot

@@ -405,6 +405,34 @@ class LLMEngine:
         """Prevent an adapter from being evicted."""
         return self.engine_core.pin_lora(lora_id)
 
+    def swap_offload_policy(
+        self,
+        source_path: str | None = None,
+        module: str | None = None,
+        source: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+        policy_kwargs: dict | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Hot-swap the CPU-offload `CachePolicy`. See design §8.2."""
+        payload: dict[str, Any] = {
+            "source_path": source_path,
+            "module": module,
+            "source": source,
+            "name": name,
+            "version": version,
+            "policy_kwargs": policy_kwargs or {},
+            "dry_run": dry_run,
+        }
+        return self.engine_core.swap_offload_policy(payload)
+
+    def get_offload_policy(self) -> dict[str, Any] | None:
+        return self.engine_core.get_offload_policy()
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        return self.engine_core.get_offload_policy_stats(reset)
+
     def collective_rpc(
         self,
         method: str | Callable[[WorkerBase], _R],

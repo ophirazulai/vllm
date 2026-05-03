@@ -47,6 +47,12 @@ def get_offload_group_idx(key: OffloadKey) -> int:
 @dataclass
 class ReqContext:
     kv_transfer_params: dict[str, Any] | None = None
+    # Opaque per-request hint dict, sourced from
+    # `sampling_params.extra_args["policy_hints"]`. Forwarded to evolved
+    # `CachePolicy` implementations so they can use request-level signal at
+    # insert/touch/evict time. The framework does not validate the contents;
+    # see design/evolved_cpu_offloading.md §16 for the threat model.
+    policy_hints: dict[str, Any] | None = None
 
 
 class LoadStoreSpec(ABC):
@@ -147,13 +153,14 @@ class OffloadingManager(ABC):
         """
         pass
 
-    def touch(self, keys: Collection[OffloadKey]):
+    def touch(self, keys: Collection[OffloadKey], req_context: ReqContext):
         """
         Mark the given blocks as recently used.
         This could in practice mean moving them to the end of an LRU list.
 
         Args:
             keys: the keys identifying the blocks.
+            req_context: per-request context (e.g. policy_hints).
         """
         return
 

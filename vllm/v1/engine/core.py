@@ -219,6 +219,23 @@ class EngineCore:
 
         self._idle_state_callbacks: list[Callable] = []
 
+        # Wire the policy hot-swap registry's idle-rollback hook.
+        # Default-off: skipped entirely if the gate is unset, so no
+        # registry singleton is touched and zero overhead is added.
+        # See `design/evolved_cpu_offloading.md` §6.
+        if (vllm_config.additional_config or {}).get("enable_policy_hotswap"):
+            from vllm.v1.kv_offload.cpu.policies.registry import PolicySwapRegistry
+
+            engine_id = vllm_config.instance_id
+
+            def _enqueue(cb: Callable[[], None]) -> None:
+                # `_notify_idle_state_callbacks` calls `callback(self)` with
+                # the engine as the sole arg; the wrapping lambda accepts
+                # and discards it.
+                self._idle_state_callbacks.append(lambda _engine: cb())
+
+            PolicySwapRegistry.singleton().attach_idle_callback(engine_id, _enqueue)
+
         # Mark the startup heap as static so that it's ignored by GC.
         # Reduces pause times of oldest generation collections.
         freeze_gc_heap()
@@ -742,6 +759,82 @@ class EngineCore:
 
     def pin_lora(self, lora_id: int) -> bool:
         return self.model_executor.pin_lora(lora_id)
+
+    # ------------------------------------------------------------------
+    # CPU-offload policy hot-swap (see design/evolved_cpu_offloading.md §7).
+    # ------------------------------------------------------------------
+
+    def swap_offload_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Utility method invoked via `call_utility("swap_offload_policy", ...)`.
+
+        The payload is a plain dict — never a class object — so cross-process
+        IPC stays msgpack-safe and we never pickle user code. The loader
+        runs *here*, in the engine process that owns `CPUOffloadingManager`.
+        """
+        if not (self.vllm_config.additional_config or {}).get(
+            "enable_policy_hotswap"
+        ):
+            return {
+                "ok": False,
+                "generation": 0,
+                "previous_generation": 0,
+                "policy_name": None,
+                "policy_version": None,
+                "source_hash": None,
+                "dry_run": False,
+                "latency_ms": 0.0,
+                "error": (
+                    "policy hot-swap is not enabled on this engine "
+                    "(set --enable-policy-hotswap or VLLM_ENABLE_POLICY_HOTSWAP=1)"
+                ),
+            }
+
+        from vllm.v1.kv_offload.cpu.policies.loader import (
+            PolicyLoader,
+            PolicyLoadError,
+        )
+        from vllm.v1.kv_offload.cpu.policies.registry import (
+            PolicySwapRegistry,
+            SwapResult,
+        )
+
+        loader = PolicyLoader()
+        try:
+            loaded = loader.load(
+                source_path=payload.get("source_path"),
+                module=payload.get("module"),
+                source=payload.get("source"),
+            )
+        except PolicyLoadError as e:
+            return SwapResult(
+                ok=False,
+                generation=0,
+                previous_generation=0,
+                error=str(e),
+            ).to_dict()
+
+        result = PolicySwapRegistry.singleton().swap(
+            engine_id=self.vllm_config.instance_id,
+            loaded=loaded,
+            policy_kwargs=payload.get("policy_kwargs") or {},
+            policy_name=payload.get("name"),
+            policy_version=payload.get("version"),
+            dry_run=bool(payload.get("dry_run", False)),
+        )
+        return result.to_dict()
+
+    def get_offload_policy(self) -> dict[str, Any] | None:
+        from vllm.v1.kv_offload.cpu.policies.registry import PolicySwapRegistry
+
+        active = PolicySwapRegistry.singleton().current(self.vllm_config.instance_id)
+        return active.to_dict() if active is not None else None
+
+    def get_offload_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        from vllm.v1.kv_offload.cpu.policies.registry import PolicySwapRegistry
+
+        return PolicySwapRegistry.singleton().stats(
+            self.vllm_config.instance_id, reset=reset
+        ).to_dict()
 
     def save_sharded_state(
         self,

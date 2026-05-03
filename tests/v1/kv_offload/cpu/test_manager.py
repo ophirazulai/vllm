@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -17,6 +18,14 @@ from vllm.v1.kv_offload.base import (
 from vllm.v1.kv_offload.cpu.common import CPULoadStoreSpec
 from vllm.v1.kv_offload.cpu.manager import CPUOffloadingManager
 from vllm.v1.kv_offload.cpu.policies.arc import ARCCachePolicy
+from vllm.v1.kv_offload.cpu.policies.base import BlockStatus, CachePolicy
+from vllm.v1.kv_offload.cpu.policies.lru import LRUCachePolicy
+from vllm.v1.kv_offload.cpu.policies.registry import (
+    ActivePolicy,
+    PolicyRegistryEntry,
+    PolicySwapRegistry,
+)
+from vllm.v1.kv_offload.cpu.policies.supervisor import SupervisedCachePolicy
 from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
 
 
@@ -120,7 +129,7 @@ def test_already_stored_block_not_evicted_during_prepare_store(eviction_policy):
     manager.complete_store(to_keys([1, 2]))
 
     # touch [1] to make block 2 the LRU candidate
-    manager.touch(to_keys([1]))
+    manager.touch(to_keys([1]), _EMPTY_REQ_CTX)
 
     # prepare_store([2, 3, 4, 5]):
     #   - block 2 is already stored -> filtered out of keys_to_store
@@ -234,7 +243,7 @@ def test_cpu_manager():
     cpu_manager.complete_store(to_keys([6, 7, 8]))
 
     # touch [5, 6, 7] (move to end of LRU order)
-    cpu_manager.touch(to_keys([5, 6, 7]))
+    cpu_manager.touch(to_keys([5, 6, 7]), _EMPTY_REQ_CTX)
 
     # prepare store [7, 9] -> evicts [8] (oldest following previous touch)
     prepare_store_output = cpu_manager.prepare_store(to_keys([9]), _EMPTY_REQ_CTX)
@@ -332,7 +341,7 @@ class TestARCPolicy:
         assert to_keys([1])[0] not in arc_policy.t2
 
         # touch block 1 (simulate second access)
-        cpu_manager.touch(to_keys([1]))
+        cpu_manager.touch(to_keys([1]), _EMPTY_REQ_CTX)
 
         # block 1 should now be in T2 (frequent)
         assert to_keys([1])[0] not in arc_policy.t1
@@ -402,7 +411,7 @@ class TestARCPolicy:
 
         # touch block 1 (cache miss, but in B1)
         # this should increase target_t1_size (favor recency)
-        cpu_manager.touch(to_keys([1]))
+        cpu_manager.touch(to_keys([1]), _EMPTY_REQ_CTX)
 
         # target should have increased
         assert arc_policy.target_t1_size > initial_target
@@ -419,7 +428,7 @@ class TestARCPolicy:
         cpu_manager.complete_store(to_keys([1, 2, 3, 4]))
 
         # promote blocks 3, 4 to T2 by touching them
-        cpu_manager.touch(to_keys([3, 4]))
+        cpu_manager.touch(to_keys([3, 4]), _EMPTY_REQ_CTX)
 
         # now: T1 = {1, 2}, T2 = {3, 4}
         assert len(arc_policy.t1) == 2
@@ -473,11 +482,11 @@ class TestARCPolicy:
         cpu_manager.complete_store(to_keys([1, 2, 3, 4]))
 
         # promote 3, 4 to T2
-        cpu_manager.touch(to_keys([3, 4]))
+        cpu_manager.touch(to_keys([3, 4]), _EMPTY_REQ_CTX)
 
         # T1 = {1, 2}, T2 = {3, 4}
         # touch [1, 3, 4] - should promote 1 to T2, and move 3,4 to end of T2
-        cpu_manager.touch(to_keys([1, 3, 4]))
+        cpu_manager.touch(to_keys([1, 3, 4]), _EMPTY_REQ_CTX)
 
         # T1 = {2}, T2 = {1, 3, 4} (in that order, with 4 most recent)
         assert len(arc_policy.t1) == 1
@@ -543,7 +552,7 @@ class TestARCPolicy:
         cpu_manager.complete_store(to_keys([3, 4, 5]))
 
         # promote some blocks to T2
-        cpu_manager.touch(to_keys([2, 3]))
+        cpu_manager.touch(to_keys([2, 3]), _EMPTY_REQ_CTX)
 
         # T1 has {4, 5}, T2 has {2, 3}
         assert len(arc_policy.t1) == 2
@@ -610,3 +619,97 @@ def test_filter_reused_manager():
     assert prepare_store_output.keys_to_store == []
 
     manager.complete_store(to_keys([1]))
+
+
+def test_cold_recover_drops_duplicate_residents_and_reports_lru():
+    manager = CPUOffloadingManager(num_blocks=4, cache_policy="arc")
+    manager.prepare_store(to_keys([10, 11, 12]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([10, 11, 12]))
+
+    inner = LRUCachePolicy(cache_capacity=4)
+    inner.insert(to_key(1), BlockStatus(0))
+    inner.insert(to_key(2), BlockStatus(0))  # duplicate block_id: must be dropped
+    inner.insert(to_key(3), BlockStatus(2))
+    inner.insert(to_key(4), BlockStatus(99))  # out of range: must be dropped
+
+    registry = PolicySwapRegistry()
+    entry = PolicyRegistryEntry(
+        manager_ref=weakref.ref(manager),
+        generation=7,
+        active=ActivePolicy(
+            engine_id="engine",
+            generation=7,
+            policy_name="arc-candidate",
+            policy_version="test",
+            source_hash="abc",
+            source_origin="source",
+        ),
+        supervisor=SupervisedCachePolicy(inner),
+        _builtin_name="arc",
+        _builtin_version="builtin",
+    )
+
+    registry._cold_recover("engine", entry, manager)
+
+    assert isinstance(manager._policy, LRUCachePolicy)
+    residents = list(manager._policy.export_state())
+    resident_block_ids = [block.block_id for _, block in residents]
+    assert resident_block_ids == [0, 2]
+    assert manager._free_list == [1]
+    assert entry.generation == 8
+    assert entry.active is not None
+    assert entry.active.policy_name == "lru"
+    assert entry.active.policy_version == "builtin"
+    assert entry.active.source_origin == "rollback:7"
+    assert entry.policy_rolled_back is True
+    assert entry.rollback_generation == 7
+
+
+def test_supervisor_rejects_malformed_read_results():
+    class BadReadPolicy(CachePolicy):
+        POLICY_NAME = "bad-read"
+        POLICY_VERSION = "test"
+
+        def __init__(self, cache_capacity: int, **kwargs):
+            pass
+
+        def get(self, key: OffloadKey) -> BlockStatus | None:
+            return "not-a-block"  # type: ignore[return-value]
+
+        def insert(
+            self,
+            key: OffloadKey,
+            block: BlockStatus,
+            req_context: ReqContext | None = None,
+        ) -> None:
+            pass
+
+        def remove(self, key: OffloadKey) -> None:
+            pass
+
+        def touch(
+            self,
+            keys: Iterable[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> None:
+            pass
+
+        def evict(
+            self,
+            n: int,
+            protected: set[OffloadKey],
+            req_context: ReqContext | None = None,
+        ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+            block = BlockStatus(0)
+            block.ref_cnt = 0
+            return [(next(iter(protected)), block)]
+
+        def export_state(self) -> Iterable[tuple[OffloadKey, BlockStatus]]:
+            return []
+
+    key = to_key(1)
+    supervisor = SupervisedCachePolicy(BadReadPolicy(1), error_budget=2)
+
+    assert supervisor.get(key) is None
+    assert supervisor.evict(1, {key}) is None
+    assert supervisor.tripped

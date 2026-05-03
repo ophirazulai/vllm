@@ -220,6 +220,27 @@ class EngineClient(ABC):
         """Perform a collective RPC call to the given path."""
         raise NotImplementedError
 
+    async def swap_offload_policy(
+        self,
+        source_path: str | None = None,
+        module: str | None = None,
+        source: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+        policy_kwargs: dict | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Hot-swap the CPU-offload `CachePolicy`. See design §8.1."""
+        raise NotImplementedError
+
+    async def get_offload_policy(self) -> dict | None:
+        """Return the active CPU-offload policy metadata, or None."""
+        raise NotImplementedError
+
+    async def get_offload_policy_stats(self, reset: bool = False) -> dict:
+        """Return CPU-offload policy stats."""
+        raise NotImplementedError
+
     async def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         """Get supported tasks"""
         raise NotImplementedError

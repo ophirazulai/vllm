@@ -105,8 +105,8 @@ class FilterReusedOffloadingManager(OffloadingManager):
     ) -> LoadStoreSpec:
         return self._backing.prepare_load(keys, req_context)
 
-    def touch(self, keys: Collection[OffloadKey]) -> None:
-        return self._backing.touch(keys)
+    def touch(self, keys: Collection[OffloadKey], req_context: ReqContext) -> None:
+        return self._backing.touch(keys, req_context)
 
     def complete_load(self, keys: Collection[OffloadKey]) -> None:
         return self._backing.complete_load(keys)

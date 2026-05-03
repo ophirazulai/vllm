@@ -930,6 +930,34 @@ class AsyncLLM(EngineClient):
         """Prevent an adapter from being evicted."""
         return await self.engine_core.pin_lora_async(lora_id)
 
+    async def swap_offload_policy(
+        self,
+        source_path: str | None = None,
+        module: str | None = None,
+        source: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+        policy_kwargs: dict | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Hot-swap the CPU-offload `CachePolicy`. See design §8.2."""
+        payload: dict = {
+            "source_path": source_path,
+            "module": module,
+            "source": source,
+            "name": name,
+            "version": version,
+            "policy_kwargs": policy_kwargs or {},
+            "dry_run": dry_run,
+        }
+        return await self.engine_core.swap_offload_policy_async(payload)
+
+    async def get_offload_policy(self) -> dict | None:
+        return await self.engine_core.get_offload_policy_async()
+
+    async def get_offload_policy_stats(self, reset: bool = False) -> dict:
+        return await self.engine_core.get_offload_policy_stats_async(reset)
+
     async def collective_rpc(
         self,
         method: str,

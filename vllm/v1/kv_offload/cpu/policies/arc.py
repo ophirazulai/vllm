@@ -2,8 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections import OrderedDict
 from collections.abc import Iterable
+from typing import Any
 
-from vllm.v1.kv_offload.base import OffloadKey
+from vllm.v1.kv_offload.base import OffloadKey, ReqContext
 from vllm.v1.kv_offload.cpu.policies.base import BlockStatus, CachePolicy
 
 
@@ -45,7 +46,13 @@ class ARCCachePolicy(CachePolicy):
         - B2 hit: Frequent access patterns matter more → decrease T1.
     """
 
-    def __init__(self, cache_capacity: int):
+    POLICY_NAME = "arc"
+    POLICY_VERSION = "builtin"
+
+    def __init__(self, cache_capacity: int, **kwargs: Any):
+        # **kwargs accepted-and-ignored to match the widened ABC; the
+        # hot-swap loader passes `policy_kwargs` through to every policy.
+        del kwargs
         self.cache_capacity: int = cache_capacity
         self.target_t1_size: float = 0.0
         self.t1: OrderedDict[OffloadKey, BlockStatus] = OrderedDict()
@@ -57,7 +64,13 @@ class ARCCachePolicy(CachePolicy):
     def get(self, key: OffloadKey) -> BlockStatus | None:
         return self.t1.get(key) or self.t2.get(key)
 
-    def insert(self, key: OffloadKey, block: BlockStatus) -> None:
+    def insert(
+        self,
+        key: OffloadKey,
+        block: BlockStatus,
+        req_context: ReqContext | None = None,
+    ) -> None:
+        del req_context
         self.t1[key] = block
         self.b1.pop(key, None)
         self.b2.pop(key, None)
@@ -66,7 +79,12 @@ class ARCCachePolicy(CachePolicy):
         if self.t1.pop(key, None) is None:
             self.t2.pop(key, None)
 
-    def touch(self, keys: Iterable[OffloadKey]) -> None:
+    def touch(
+        self,
+        keys: Iterable[OffloadKey],
+        req_context: ReqContext | None = None,
+    ) -> None:
+        del req_context
         for key in reversed(list(keys)):
             if key in self.t1:
                 block = self.t1.pop(key)
@@ -95,8 +113,12 @@ class ARCCachePolicy(CachePolicy):
                 self.b2.move_to_end(key)
 
     def evict(
-        self, n: int, protected: set[OffloadKey]
+        self,
+        n: int,
+        protected: set[OffloadKey],
+        req_context: ReqContext | None = None,
     ) -> list[tuple[OffloadKey, BlockStatus]] | None:
+        del req_context
         if n == 0:
             return []
 
@@ -154,3 +176,8 @@ class ARCCachePolicy(CachePolicy):
                 ghost.popitem(last=False)
 
         return result
+
+    def export_state(self) -> Iterable[tuple[OffloadKey, BlockStatus]]:
+        # Resident-only: ghost-list metadata (B1/B2) is intentionally lost
+        # across swaps, per design §4.
+        return list(self.t1.items()) + list(self.t2.items())
