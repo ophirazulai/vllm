@@ -566,23 +566,12 @@ class PolicySwapRegistry:
                     latency_ms=_ms(t0),
                 )
 
-            # Step 8: pointer flip.
+            # Step 8: pointer flip. Plain attribute assignment cannot raise
+            # (no descriptor on `_policy`), so no try/except wrap.
             on_trip = self._make_on_trip(engine_id)
             supervisor = SupervisedCachePolicy(new_policy, on_trip=on_trip)
             outgoing_supervisor = entry.supervisor
-            try:
-                manager._policy = supervisor  # noqa: SLF001
-            except Exception as e:  # noqa: BLE001 — defensive
-                discard_module(loaded.module.__name__)
-                metrics.record_swap_result("flip_failed", _ms(t0))
-                manager._policy = old_policy  # noqa: SLF001
-                return SwapResult(
-                    ok=False,
-                    generation=previous_generation,
-                    previous_generation=previous_generation,
-                    latency_ms=_ms(t0),
-                    error=f"pointer flip raised: {e}",
-                )
+            manager._policy = supervisor  # noqa: SLF001
 
             # Active state update — past the point of no rollback.
             prior_module = entry.active_module_name

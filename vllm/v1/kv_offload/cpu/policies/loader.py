@@ -31,7 +31,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.cpu.policies.base import CachePolicy
@@ -290,15 +289,9 @@ def discard_module(name: str | None) -> None:
     sys.modules.pop(name, None)
 
 
-# Re-exported for type-checkers / callers that don't want to import `Any`.
 __all__ = [
     "LoadedPolicy",
     "PolicyLoadError",
     "PolicyLoader",
     "discard_module",
 ]
-
-
-def _annotate_loader_test_hooks() -> dict[str, Any]:
-    """Hook bag exposed for unit tests; intentionally empty in production."""
-    return {}

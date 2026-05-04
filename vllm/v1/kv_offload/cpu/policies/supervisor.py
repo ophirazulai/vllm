@@ -17,7 +17,6 @@ See `design/evolved_cpu_offloading.md` §14.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import Any
 
 from vllm.logger import init_logger
 from vllm.v1.kv_offload.base import OffloadKey, ReqContext
@@ -125,10 +124,7 @@ class SupervisedCachePolicy(CachePolicy):
         if block is not None and not isinstance(block, BlockStatus):
             self._record(
                 "get",
-                TypeError(
-                    "expected BlockStatus | None, got "
-                    f"{type(block).__name__}"
-                ),
+                TypeError(f"expected BlockStatus | None, got {type(block).__name__}"),
             )
             return None
         return block
@@ -188,9 +184,7 @@ class SupervisedCachePolicy(CachePolicy):
     def export_state(self) -> Iterable[tuple[OffloadKey, BlockStatus]]:
         return self._inner.export_state()
 
-    def import_state(
-        self, items: Iterable[tuple[OffloadKey, BlockStatus]]
-    ) -> None:
+    def import_state(self, items: Iterable[tuple[OffloadKey, BlockStatus]]) -> None:
         self._inner.import_state(items)
 
     @staticmethod
@@ -206,14 +200,12 @@ class SupervisedCachePolicy(CachePolicy):
             )
         if len(evicted) != n:
             return TypeError(
-                f"expected evict() to return exactly {n} entries, "
-                f"got {len(evicted)}"
+                f"expected evict() to return exactly {n} entries, got {len(evicted)}"
             )
         for item in evicted:
             if not isinstance(item, tuple) or len(item) != 2:
                 return TypeError(
-                    "expected each evict() entry to be "
-                    "(OffloadKey, BlockStatus)"
+                    "expected each evict() entry to be (OffloadKey, BlockStatus)"
                 )
             key, block = item
             if not isinstance(key, bytes):
@@ -230,14 +222,9 @@ class SupervisedCachePolicy(CachePolicy):
                 )
             if block.ref_cnt != 0:
                 return TypeError(
-                    "expected evict() block to have ref_cnt == 0, "
-                    f"got {block.ref_cnt}"
+                    f"expected evict() block to have ref_cnt == 0, got {block.ref_cnt}"
                 )
         return None
 
 
 __all__ = ["SupervisedCachePolicy"]
-
-
-# Silence unused-import warnings for `Any`; reserved for future hooks.
-_ = Any
