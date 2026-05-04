@@ -3,6 +3,7 @@
 import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -19,6 +20,7 @@ from vllm.v1.kv_offload.cpu.common import CPULoadStoreSpec
 from vllm.v1.kv_offload.cpu.manager import CPUOffloadingManager
 from vllm.v1.kv_offload.cpu.policies.arc import ARCCachePolicy
 from vllm.v1.kv_offload.cpu.policies.base import BlockStatus, CachePolicy
+from vllm.v1.kv_offload.cpu.policies.loader import LoadedPolicy
 from vllm.v1.kv_offload.cpu.policies.lru import LRUCachePolicy
 from vllm.v1.kv_offload.cpu.policies.registry import (
     ActivePolicy,
@@ -27,6 +29,8 @@ from vllm.v1.kv_offload.cpu.policies.registry import (
 )
 from vllm.v1.kv_offload.cpu.policies.supervisor import SupervisedCachePolicy
 from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+pytestmark = pytest.mark.skip_global_cleanup
 
 
 def make_req_context(kv_transfer_params: dict | None = None) -> ReqContext:
@@ -1049,3 +1053,150 @@ def test_prepare_store_rejects_evict_that_keeps_key_present():
     assert manager.lookup(to_key(1), _EMPTY_REQ_CTX) is True
     assert manager._free_list == []
     assert bad_policy.write_errors == 1
+
+
+def test_prepare_store_cleans_up_insert_that_mutates_then_raises():
+    """If `insert` mutates policy state and then raises, rollback must remove
+    the failing key too. Otherwise the policy keeps a not-ready entry pointing
+    at a CPU block that has already been returned to the free list.
+    """
+
+    class MutatingRaiseInsertPolicy(LRUCachePolicy):
+        def __init__(self, cache_capacity: int, **kwargs):
+            super().__init__(cache_capacity, **kwargs)
+            self.insert_calls = 0
+            self.write_errors = 0
+
+        def insert(
+            self,
+            key: OffloadKey,
+            block: BlockStatus,
+            req_context: ReqContext | None = None,
+        ) -> None:
+            super().insert(key, block, req_context)
+            self.insert_calls += 1
+            if self.insert_calls == 2:
+                raise RuntimeError("boom after mutation")
+
+        def record_write_error(self) -> None:
+            self.write_errors += 1
+
+    manager = CPUOffloadingManager(num_blocks=2, cache_policy="lru")
+    bad_policy = MutatingRaiseInsertPolicy(cache_capacity=2)
+    manager._policy = bad_policy
+
+    assert manager.prepare_store(to_keys([1, 2]), _EMPTY_REQ_CTX) is None
+
+    assert bad_policy.get(to_key(1)) is None
+    assert bad_policy.get(to_key(2)) is None
+    assert manager._num_allocated_blocks == 2
+    assert manager._free_list == [0, 1]
+    assert manager._get_num_free_blocks() == 2
+    assert bad_policy.write_errors == 1
+
+
+def test_registry_swap_preserves_residents_on_success():
+    class CountingPolicy(LRUCachePolicy):
+        POLICY_NAME = "counting"
+        POLICY_VERSION = "test"
+
+    manager = CPUOffloadingManager(num_blocks=2, cache_policy="lru")
+    manager.prepare_store(to_keys([1]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([1]))
+
+    registry = PolicySwapRegistry()
+    registry.attach("engine", manager, builtin_name="lru")
+    result = registry.swap(
+        "engine",
+        LoadedPolicy(
+            cls=CountingPolicy,
+            source="",
+            source_hash="hash",
+            source_origin="source",
+            module=ModuleType("counting_policy"),
+        ),
+    )
+
+    assert result.ok is True
+    assert result.generation == 1
+    assert manager.lookup(to_key(1), _EMPTY_REQ_CTX) is True
+    assert isinstance(manager._policy, SupervisedCachePolicy)
+    assert isinstance(manager._policy.inner, CountingPolicy)
+    active = registry.current("engine")
+    assert active is not None
+    assert active.policy_name == "counting"
+    assert active.generation == 1
+
+
+def test_registry_swap_carries_outgoing_supervisor_errors_into_stats():
+    class CountingPolicy(LRUCachePolicy):
+        POLICY_NAME = "counting"
+        POLICY_VERSION = "test"
+
+    manager = CPUOffloadingManager(num_blocks=2, cache_policy="lru")
+    registry = PolicySwapRegistry()
+    registry.attach("engine", manager, builtin_name="lru")
+
+    first = registry.swap(
+        "engine",
+        LoadedPolicy(
+            cls=CountingPolicy,
+            source="",
+            source_hash="hash1",
+            source_origin="source",
+            module=ModuleType("counting_policy_1"),
+        ),
+    )
+    assert first.ok is True
+    assert isinstance(manager._policy, SupervisedCachePolicy)
+    manager._policy.record_write_error()
+    manager._policy.record_write_error()
+
+    second = registry.swap(
+        "engine",
+        LoadedPolicy(
+            cls=CountingPolicy,
+            source="",
+            source_hash="hash2",
+            source_origin="source",
+            module=ModuleType("counting_policy_2"),
+        ),
+    )
+
+    assert second.ok is True
+    assert registry.stats("engine").policy_errors == 2
+
+
+def test_registry_swap_rejects_import_state_that_drops_residents():
+    class DroppingImportPolicy(LRUCachePolicy):
+        POLICY_NAME = "drop-import"
+        POLICY_VERSION = "test"
+
+        def import_state(self, items: Iterable[tuple[OffloadKey, BlockStatus]]) -> None:
+            del items
+
+    manager = CPUOffloadingManager(num_blocks=2, cache_policy="lru")
+    manager.prepare_store(to_keys([1]), _EMPTY_REQ_CTX)
+    manager.complete_store(to_keys([1]))
+    old_policy = manager._policy
+
+    registry = PolicySwapRegistry()
+    registry.attach("engine", manager, builtin_name="lru")
+    result = registry.swap(
+        "engine",
+        LoadedPolicy(
+            cls=DroppingImportPolicy,
+            source="",
+            source_hash="hash",
+            source_origin="source",
+            module=ModuleType("drop_import_policy"),
+        ),
+    )
+
+    assert result.ok is False
+    assert "did not preserve resident keys" in (result.error or "")
+    assert manager._policy is old_policy
+    assert manager.lookup(to_key(1), _EMPTY_REQ_CTX) is True
+    active = registry.current("engine")
+    assert active is not None
+    assert active.generation == 0

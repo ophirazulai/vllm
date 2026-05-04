@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import dataclasses
 import secrets
-import sys
 import threading
 import time
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from vllm.logger import init_logger
@@ -216,6 +215,62 @@ def _run_canary(cls: type[CachePolicy], cache_capacity: int, kwargs: dict) -> No
         raise RuntimeError("canary: with-context evict returned wrong entry")
     if canary.get(ctx_key) is not None:
         raise RuntimeError("canary: with-context evicted key still present")
+
+
+def _state_by_key(
+    items: list[tuple[OffloadKey, BlockStatus]],
+    label: str,
+) -> dict[OffloadKey, BlockStatus]:
+    """Validate and index exported policy state.
+
+    Hot-swap migrates `BlockStatus` objects by reference. A policy that
+    exports duplicate keys / duplicate block IDs, or imports residents as
+    cloned `BlockStatus` objects, would desynchronize the manager's CPU block
+    pool from the policy. Catch that before the pointer flip.
+    """
+    by_key: dict[OffloadKey, BlockStatus] = {}
+    block_ids: set[int] = set()
+    for key, block in items:
+        if not isinstance(key, bytes):
+            raise RuntimeError(
+                f"{label} state contains invalid key type {type(key).__name__}"
+            )
+        if not isinstance(block, BlockStatus):
+            raise RuntimeError(
+                f"{label} state contains invalid block type {type(block).__name__}"
+            )
+        if key in by_key:
+            raise RuntimeError(f"{label} state contains duplicate key {key!r}")
+        if block.block_id in block_ids:
+            raise RuntimeError(
+                f"{label} state contains duplicate block_id {block.block_id}"
+            )
+        by_key[key] = block
+        block_ids.add(block.block_id)
+    return by_key
+
+
+def _validate_imported_state(
+    expected_items: list[tuple[OffloadKey, BlockStatus]],
+    actual_items: list[tuple[OffloadKey, BlockStatus]],
+) -> None:
+    expected = _state_by_key(expected_items, "outgoing")
+    actual = _state_by_key(actual_items, "incoming")
+    expected_keys = set(expected)
+    actual_keys = set(actual)
+    if expected_keys != actual_keys:
+        missing = len(expected_keys - actual_keys)
+        extra = len(actual_keys - expected_keys)
+        raise RuntimeError(
+            "candidate import_state did not preserve resident keys "
+            f"(missing={missing}, extra={extra})"
+        )
+    for key, expected_block in expected.items():
+        if actual[key] is not expected_block:
+            raise RuntimeError(
+                "candidate import_state did not preserve BlockStatus object "
+                f"for key {key!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +467,7 @@ class PolicySwapRegistry:
             old_policy = manager._policy  # noqa: SLF001
             try:
                 state = list(old_policy.export_state())
+                _state_by_key(state, "outgoing")
             except Exception as e:  # noqa: BLE001
                 discard_module(loaded.module.__name__)
                 metrics.record_swap_result("export_failed", _ms(t0))
@@ -443,6 +499,7 @@ class PolicySwapRegistry:
             # Step 3: migrate state into the candidate.
             try:
                 new_policy.import_state(state)
+                _validate_imported_state(state, list(new_policy.export_state()))
             except Exception as e:  # noqa: BLE001
                 discard_module(loaded.module.__name__)
                 metrics.record_swap_result("import_failed", _ms(t0))
@@ -512,6 +569,7 @@ class PolicySwapRegistry:
             # Step 8: pointer flip.
             on_trip = self._make_on_trip(engine_id)
             supervisor = SupervisedCachePolicy(new_policy, on_trip=on_trip)
+            outgoing_supervisor = entry.supervisor
             try:
                 manager._policy = supervisor  # noqa: SLF001
             except Exception as e:  # noqa: BLE001 — defensive
@@ -531,6 +589,10 @@ class PolicySwapRegistry:
             entry.generation += 1
             entry.supervisor = supervisor
             entry.active_module_name = loaded.module.__name__
+            if outgoing_supervisor is not None:
+                entry.cumulative_policy_errors += outgoing_supervisor.errors
+                if outgoing_supervisor.errors:
+                    metrics.record_policy_error(outgoing_supervisor.errors)
             entry.active = ActivePolicy(
                 engine_id=engine_id,
                 generation=entry.generation,
@@ -756,8 +818,3 @@ __all__ = [
     "PolicySwapRegistry",
     "SwapResult",
 ]
-
-
-# Silence unused-import warnings for `field` / `sys` (kept for future hooks).
-_ = field
-_ = sys

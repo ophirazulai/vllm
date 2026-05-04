@@ -71,6 +71,17 @@ def attach_router(app: FastAPI) -> None:
     )
     async def swap_offload_policy(body: SwapOffloadPolicyRequest, raw_request: Request):
         _ensure_localhost(raw_request)
+        provided = sum(
+            value is not None for value in (body.source_path, body.module, body.source)
+        )
+        if provided != 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "exactly one of `source_path`, `module`, `source` must be "
+                    f"set (got {provided})"
+                ),
+            )
         ec = engine_client(raw_request)
         try:
             result = await ec.swap_offload_policy(

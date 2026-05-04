@@ -5,6 +5,8 @@ import pytest
 from vllm.sampling_params import SamplingParams
 from vllm.v1.request import Request, RequestStatus
 
+pytestmark = pytest.mark.skip_global_cleanup
+
 
 def test_request_status_fmt_str():
     """Test that the string representation of RequestStatus is correct."""

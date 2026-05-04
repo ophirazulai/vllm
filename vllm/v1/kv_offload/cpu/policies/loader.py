@@ -71,6 +71,7 @@ def _pick_policy_class(mod: ModuleType) -> type[CachePolicy]:
     class.
     """
     candidates: list[type[CachePolicy]] = []
+    seen: set[type[CachePolicy]] = set()
     for value in vars(mod).values():
         if not inspect.isclass(value):
             continue
@@ -80,6 +81,9 @@ def _pick_policy_class(mod: ModuleType) -> type[CachePolicy]:
             continue
         if value.__module__ != mod.__name__:
             continue
+        if value in seen:
+            continue
+        seen.add(value)
         candidates.append(value)
     if not candidates:
         raise PolicyLoadError(

@@ -295,13 +295,17 @@ class CPUOffloadingManager(OffloadingManager):
                 len(keys_to_store),
                 e,
             )
+            # Include the key whose `insert` raised: a buggy policy can
+            # mutate its table and then throw, and leaving that not-ready
+            # entry behind would point at a block we are about to free.
+            failed_idx = min(inserted + 1, len(keys_to_store))
             for undo_key, undo_block in zip(
-                keys_to_store[:inserted], blocks[:inserted]
+                keys_to_store[:failed_idx], blocks[:failed_idx]
             ):
                 with suppress(Exception):
                     self._policy.remove(undo_key)
                 self._free_block(undo_block)
-            for pending_block in blocks[inserted:]:
+            for pending_block in blocks[failed_idx:]:
                 self._free_block(pending_block)
             with suppress(Exception):
                 self._policy.record_write_error()
