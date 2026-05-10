@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G · V1 Speculative Decoding · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/spec_decode" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>G · V1 Speculative Decoding
+    <span class="subtitle">EAGLE-1/2/3, MTP, ngram (CPU + GPU), Medusa, DFlash, suffix-decoding, draft-model proposer.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/spec_decode/</code> (legacy V1 entry points) and <code>vllm/v1/worker/gpu/spec_decode/</code> (MRV2).<br>
+       <strong>Key files (verified):</strong> <code>llm_base_proposer.py</code> (<code>SpecDecodeBaseProposer</code> — actual base logic;
+       legacy <code>eagle.py</code> is now a 22-line stub deriving from it with <code>pass_hidden_states_to_model=True</code>),
+       <code>ngram_proposer.py</code> + <code>ngram_proposer_gpu.py</code> (PR #12193, NGram-GPU PR #29184),
+       <code>medusa.py</code>, <code>dflash.py</code> (PR #32206), <code>draft_model.py</code>, <code>suffix_decoding.py</code>,
+       <code>extract_hidden_states.py</code>, <code>metrics.py</code> (<code>SpecDecodingStats</code>), <code>utils.py</code>.<br>
+       <strong>MRV2 path:</strong> <code>vllm/v1/worker/gpu/spec_decode/eagle/</code>, <code>rejection_sampler.py</code>,
+       <code>probabilistic_rejection_sampler_utils.py</code>, <code>synthetic_rejection_sampler_utils.py</code>.<br>
+       Newer additions: "Unified Parallel Drafting" (PR #32887), "ngram-eagle hybrid" (PR #24344),
+       "Eagle3 with CUDA graphs" (PR #35029, #35040).</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: medium</span> <span class="pill pill-rank">target #4</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Adaptive draft-length / acceptance policy <span class="pill pill-risk-medium">risk: low–medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/llm_base_proposer.py" target="_blank" rel="noreferrer">vllm/v1/spec_decode/llm_base_proposer.py</a> ·
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/ngram_proposer.py" target="_blank" rel="noreferrer">ngram_proposer.py</a></div>
+    <p>(a) Per-request adaptive <code>num_speculative_tokens</code> (currently a static config); (b) ngram <code>prompt_lookup_min/max</code>
+       heuristic; (c) the EAGLE chain-vs-tree topology and pruning rule. Acceptance-rate–aware draft length is a natural fit because the
+       objective (token-acceptance × throughput) is a simple scalar with a Bernoulli-mixture reward signal.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Function <code>(acceptance_history, queue_state, request_priority) → num_speculative_tokens</code>.</dd>
+      <dt>Evaluator</dt><dd><code>examples/offline_inference/spec_decode.py</code> on InstructCoder + MT-Bench (already in repo as PR #18847).</dd>
+      <dt>Metric</dt><dd>Tokens/sec (already encodes the AL × draft-overhead trade-off); break ties by acceptance length AL.</dd>
+      <dt>Risk</dt><dd>Low–medium — wrong draft length only affects latency, never correctness, because the rejection sampler preserves the target distribution.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>EAGLE tree topology &amp; pruning <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/worker/gpu/spec_decode/eagle" target="_blank" rel="noreferrer">vllm/v1/worker/gpu/spec_decode/eagle/</a></div>
+    <p>EAGLE-2 dynamic draft trees and EAGLE-3 training-time test pruning logic.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Tree branching factor + pruning threshold as a function of confidence histogram and step latency.</dd>
+      <dt>Evaluator</dt><dd>End-to-end serving with EAGLE-3 + CUDA graphs.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>ngram_proposer.prompt_lookup_min/max heuristic <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/ngram_proposer.py" target="_blank" rel="noreferrer">vllm/v1/spec_decode/ngram_proposer.py</a> ·
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/ngram_proposer_gpu.py" target="_blank" rel="noreferrer">ngram_proposer_gpu.py</a></div>
+    <p>Static n-gram match window currently. Easy to evolve into a context-aware pair.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Leviathan, Kalman, Matias — Fast Inference from Transformers via Speculative Decoding.</span> <span class="paper-meta">ICML 2023.</span> <span class="paper-id">arXiv:2211.17192</span></li>
+    <li><span class="paper-title">Chen et al. — Accelerating LLM Decoding with Speculative Sampling.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2302.01318</span></li>
+    <li><span class="paper-title">Cai et al. — Medusa: Simple LLM Inference Acceleration with Multiple Decoding Heads.</span> <span class="paper-meta">ICML 2024.</span> <span class="paper-id">arXiv:2401.10774</span></li>
+    <li><span class="paper-title">Li, Wei, Zhang, Zhang — EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty.</span> <span class="paper-meta">ICML 2024.</span> <span class="paper-id">arXiv:2401.15077</span></li>
+    <li><span class="paper-title">Li et al. — EAGLE-2: Faster Inference with Dynamic Draft Trees.</span> <span class="paper-meta">EMNLP 2024.</span></li>
+    <li><span class="paper-title">Li et al. — EAGLE-3: Scaling up Inference Acceleration via Training-Time Test.</span> <span class="paper-meta">NeurIPS 2025.</span> <span class="paper-id">arXiv:2503.01840</span></li>
+    <li><span class="paper-title">Ankner et al. — Hydra: Sequentially-Dependent Draft Heads.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.05109</span></li>
+    <li><span class="paper-title">Fu et al. — Lookahead Decoding.</span> <span class="paper-meta">ICML 2024.</span> <span class="paper-id">arXiv:2402.02057</span></li>
+    <li><span class="paper-title">He et al. — REST: Retrieval-Based Speculative Decoding.</span> <span class="paper-meta">NAACL 2024.</span> <span class="paper-id">arXiv:2311.08252</span></li>
+    <li><span class="paper-title">Saxena — Prompt Lookup Decoding (PLD).</span> <span class="paper-meta">GitHub 2023.</span></li>
+    <li><span class="paper-title">Miao et al. — SpecInfer: Tree-based Speculation.</span> <span class="paper-meta">ASPLOS 2024.</span> <span class="paper-id">arXiv:2305.09781</span></li>
+    <li><span class="paper-title">Liu et al. — Online Speculative Decoding.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2310.07177</span></li>
+    <li><span class="paper-title">Chen et al. — Sequoia: Scalable, Robust, and Hardware-aware Speculative Decoding.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.12374</span></li>
+    <li><span class="paper-title">Svirschevski et al. — SpecExec.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2406.02532</span></li>
+    <li><span class="paper-title">P-EAGLE: Parallel-Drafting EAGLE.</span> <span class="paper-meta">2026 anchor.</span> <span class="paper-id">arXiv:2602.01469</span></li>
+    <li><span class="paper-title">SpecVocab.</span> <span class="paper-meta">2026 anchor.</span> <span class="paper-id">arXiv:2602.13836</span></li>
+    <li><span class="paper-title">SpecForge / FR-Spec / VocabTrim.</span> <span class="paper-meta">2026.</span> <span class="paper-id">arXiv:2603.18567</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="F_sampling.html">
+      <span class="nav-label">← Prev · F</span>
+      <span class="nav-title">V1 Sampling</span>
+    </a>
+    <a class="next" href="H_structured_output.html">
+      <span class="nav-label">Next · H →</span>
+      <span class="nav-title">V1 Structured Output</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

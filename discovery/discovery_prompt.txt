@@ -1,0 +1,8 @@
+@discovery/vllm_discovery.md 
+@vllm/v1 
+REview and reflect on each found location in @discovery/vllm_discovery.md, fix the markdown if needed.
+
+Prepare html for each module in this report
+for each module, show the possible evolve locations with all details, and show all the papers related to this module/location
+Prepare also index html
+prepare also architecture diagram, think how to add it

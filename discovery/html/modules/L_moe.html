@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L · MoE Stack · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/fused_moe" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>L · MoE Stack
+    <span class="subtitle">Triton fused-MoE kernel + JSON configs, CUTLASS/DeepGEMM backends, modular EP/DP variants.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/model_executor/layers/fused_moe/</code><br>
+       <strong>Key files (verified):</strong> <code>fused_moe.py</code> (Triton <code>fused_moe_kernel</code>,
+       <code>moe_align_block_size.py</code>, JSON-config loader from <code>configs/</code>),
+       <code>layer.py</code> (<code>FusedMoE</code>), <code>flashinfer_cutlass_moe.py</code>, <code>triton_cutlass_moe.py</code>,
+       <code>triton_deep_gemm_moe.py</code>, <code>deep_gemm_utils.py</code>, <code>fused_marlin_moe.py</code>,
+       <code>fused_humming_moe.py</code>, <code>fused_batched_moe.py</code>, <code>modular_kernel.py</code>
+       (<code>FusedMoEPrepareAndFinalizeModular</code>), <code>moe_permute_unpermute.py</code>, <code>moe_fused_mul_sum.py</code>,
+       <code>routed_experts_capturer.py</code>, <code>topk_weight_and_reduce.py</code>, <code>unquantized_fused_moe_method.py</code>,
+       <code>cpu_fused_moe.py</code>, <code>rocm_aiter_fused_moe.py</code>; subdirs <code>experts/</code>, <code>oracle/</code>,
+       <code>prepare_finalize/</code>, <code>router/</code>, <code>runner/</code>; per-shape JSON configs in <code>configs/</code>
+       (e.g., <code>E=*,N=*,device_name=*.json</code>).</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> <span class="pill pill-rank">target #1</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Fused-MoE Triton kernel autotune configs <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/fused_moe/configs" target="_blank" rel="noreferrer">vllm/model_executor/layers/fused_moe/configs/*.json</a> +
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/fused_moe.py" target="_blank" rel="noreferrer">fused_moe.py</a></div>
+    <p>The per-(num_experts E, intermediate-size N, GPU device) JSON config files that select
+       <code>BLOCK_M / BLOCK_N / BLOCK_K / GROUP_M / num_warps / num_stages</code> for the fused MoE Triton kernel.
+       The structured space is small enough for evolutionary search and large enough that hand-tuned grids
+       (cf. PRs #19443, #31442 for B200 Qwen3MoE) miss optima.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Per-shape config tuples; emit new JSON config files keyed on (E, N, device).</dd>
+      <dt>Evaluator</dt><dd><code>benchmarks/kernels/benchmark_moe.py</code> — already in the repo.</dd>
+      <dt>Metric</dt><dd>ms/iter at fixed (M, K, N, E, top-k); correctness via tolerance to a reference dense-then-gather PyTorch implementation.</dd>
+      <dt>Fitness</dt><dd>Minimize median latency over a workload distribution (M ∈ {1, 16, 64, 256, 1024, 4096}); enforce <code>max_relative_error &lt; 1e-2</code> vs fp32 reference.</dd>
+      <dt>Expected gain</dt><dd>GEAK-OpenEvolve and Kernel-Smith report 1.5–2.5× over vendor defaults on similar shape regimes; vLLM's own <code>configs/</code> directory shows ~1.2–2× swings between hand-tuned variants.</dd>
+      <dt>Risk</dt><dd>Low — purely additive; fall back to default config on any regression.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>moe_align_block_size kernel <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/moe_align_block_size.py" target="_blank" rel="noreferrer">vllm/model_executor/layers/fused_moe/moe_align_block_size.py</a></div>
+    <p>Token-routing prep. CUDA-graph-compliant variant has knobs (PR #12036).</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>ms.</dd>
+      <dt>Evaluator</dt><dd>Microbench.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Backend dispatch (CUTLASS / DeepGEMM / Triton / IBM TMA) <span class="pill pill-risk-medium">risk: low–medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/triton_cutlass_moe.py" target="_blank" rel="noreferrer">triton_cutlass_moe.py</a> ·
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/triton_deep_gemm_moe.py" target="_blank" rel="noreferrer">triton_deep_gemm_moe.py</a> ·
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/flashinfer_cutlass_moe.py" target="_blank" rel="noreferrer">flashinfer_cutlass_moe.py</a></div>
+    <p>Backend selection per (M, K, N, E, top-k, dtype, device).</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Decision tree mapping shape → backend; tile sizes inside each backend.</dd>
+      <dt>Metric</dt><dd>ms/token.</dd>
+    </dl>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Shazeer et al. — Outrageously Large Neural Networks: The Sparsely-Gated MoE.</span> <span class="paper-meta">ICLR 2017.</span></li>
+    <li><span class="paper-title">Lepikhin et al. — GShard.</span> <span class="paper-meta">ICLR 2021.</span> <span class="paper-id">arXiv:2006.16668</span></li>
+    <li><span class="paper-title">Fedus, Zoph, Shazeer — Switch Transformer.</span> <span class="paper-meta">JMLR 2022.</span> <span class="paper-id">arXiv:2101.03961</span></li>
+    <li><span class="paper-title">Gale et al. — MegaBlocks: Efficient Sparse Training with MoEs.</span> <span class="paper-meta">MLSys 2023.</span> <span class="paper-id">arXiv:2211.15841</span> <span class="paper-direction">Block-sparse formulation.</span></li>
+    <li><span class="paper-title">Hwang et al. — Tutel: Adaptive MoE at Scale.</span> <span class="paper-meta">MLSys 2023.</span> <span class="paper-id">arXiv:2206.03382</span></li>
+    <li><span class="paper-title">Rajbhandari et al. — DeepSpeed-MoE.</span> <span class="paper-meta">2022.</span> <span class="paper-id">arXiv:2201.05596</span></li>
+    <li><span class="paper-title">He et al. — FasterMoE.</span> <span class="paper-meta">PPoPP 2022.</span></li>
+    <li><span class="paper-title">DeepSeek-AI — DeepSeekMoE: Towards Ultimate Expert Specialization.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.06066</span> <span class="paper-direction">Fine-grained experts + shared experts.</span></li>
+    <li><span class="paper-title">DeepSeek-V3 Technical Report.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2412.19437</span></li>
+    <li><span class="paper-title">EPS-MoE: Expert Pipeline Scheduler.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2410.12247</span></li>
+    <li><span class="paper-title">FinDEP: Fine-grained Disaggregated Expert Parallelism.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2512.21487</span></li>
+    <li><span class="paper-title">X-MoE.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2508.13337</span></li>
+    <li><span class="paper-title">Jiang et al. — Mixtral of Experts.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.04088</span></li>
+    <li><span class="paper-title">AMD — GEAK-OptimAgentv2 / GEAK-OpenEvolve.</span> <span class="paper-meta">ROCm Blogs 2025.</span> <span class="paper-direction">Methodology transfers to NVIDIA Triton.</span></li>
+    <li><span class="paper-title">Kernel-Smith — Unified Recipe for Evolutionary Kernel Optimization.</span> <span class="paper-meta">2026 anchor.</span> <span class="paper-id">arXiv:2603.28342</span> <span class="paper-direction">Uses OpenEvolve directly on Triton MoE-shaped kernels.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="K_quantization.html">
+      <span class="nav-label">← Prev · K</span>
+      <span class="nav-title">Quantization</span>
+    </a>
+    <a class="next" href="M_lora.html">
+      <span class="nav-label">Next · M →</span>
+      <span class="nav-title">LoRA</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

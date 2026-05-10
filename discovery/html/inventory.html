@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventory · vLLM × Evolutionary Code Search</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="index.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="inventory.html" class="active">Inventory</a>
+      <a href="methodology.html">Methodology</a>
+      <a href="index.html#modules">Modules</a>
+      <a href="https://github.com/vllm-project/vllm" target="_blank" rel="noreferrer">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>Flat Evolve-Location Inventory
+    <span class="subtitle">Every evolve location across the 17 modules, in one filterable table.</span>
+  </h1>
+
+  <section class="hero">
+    <p>This is the operational view of the report. Each row is one place where evolutionary search has clear ROI.
+       Filter by risk pill or search by file path / symbol / module. Click the path to open the source on GitHub,
+       click the module letter to open its full page.</p>
+  </section>
+
+  <div class="inv-controls">
+    <input type="search" id="invSearch" placeholder="Search file, symbol, module…" oninput="filter()">
+    <button class="filter-btn active" data-risk="all" onclick="setRisk('all',event)">All risks</button>
+    <button class="filter-btn" data-risk="low" onclick="setRisk('low',event)">Low</button>
+    <button class="filter-btn" data-risk="medium" onclick="setRisk('medium',event)">Medium</button>
+    <button class="filter-btn" data-risk="high" onclick="setRisk('high',event)">High</button>
+    <span style="font-size:12px;color:var(--text-dim);margin-left:auto" id="invCount"></span>
+  </div>
+
+  <table class="data-table inv-table">
+    <thead>
+      <tr>
+        <th style="width:60px">Mod</th>
+        <th>File · Symbol</th>
+        <th>What to evolve</th>
+        <th>Evaluator / Metric</th>
+        <th style="width:100px">Risk</th>
+        <th style="width:60px">Top-10</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- B · Scheduler (6 rows) -->
+      <tr data-risk="high"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L352" target="_blank" rel="noreferrer">scheduler.py :: Scheduler.schedule</a> <span class="mono" style="color:var(--text-dim);font-size:12px">L352</span></td>
+        <td>Per-step admission + token budgeting + chunked-prefill chunk-sizing + preemption victim selection.</td>
+        <td><code>benchmark_serving.py</code> · TTFT/TPOT p99, throughput</td>
+        <td><span class="pill pill-risk-high">high</span></td><td><span class="pill pill-rank">#2</span></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L1567" target="_blank" rel="noreferrer">scheduler.py :: _select_waiting_queue_for_scheduling</a> <span class="mono" style="color:var(--text-dim);font-size:12px">L1567</span></td>
+        <td>Picks waiting vs skipped_waiting queue (issue #27441).</td>
+        <td>Same · tail latency, starvation count</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L952" target="_blank" rel="noreferrer">scheduler.py :: _preempt_request</a> <span class="mono" style="color:var(--text-dim);font-size:12px">L952</span></td>
+        <td>Preemption victim selection (currently <code>max((priority, arrival_time))</code>).</td>
+        <td>Custom mixed-priority bench · preempt count, fairness</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L1103" target="_blank" rel="noreferrer">scheduler.py :: _try_schedule_encoder_inputs</a> <span class="mono" style="color:var(--text-dim);font-size:12px">L1103</span></td>
+        <td>VLM encoder-input packing (issue #25903).</td>
+        <td><code>mmmu_bench.py</code> · VLM throughput, encoder-cache hit</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L302" target="_blank" rel="noreferrer">scheduler.py :: _mamba_block_aligned_split</a> <span class="mono" style="color:var(--text-dim);font-size:12px">L302</span></td>
+        <td>Block-aligned chunked prefill for Mamba/hybrid (Qwen3-Next, Jamba).</td>
+        <td>Hybrid-model serving bench · throughput at TTFT SLO</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td><span class="pill pill-rank">#10</span></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/B_scheduler.html">B</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/request_queue.py" target="_blank" rel="noreferrer">request_queue.py :: SchedulingPolicy / create_request_queue</a></td>
+        <td>Insertion / peek / pop datastructure choice.</td>
+        <td>Microbench · per-step overhead</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- C · KV-Cache (4 rows) -->
+      <tr data-risk="high"><td><a href="modules/C_kv_cache_manager.html">C</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_utils.py" target="_blank" rel="noreferrer">kv_cache_utils.py :: block-hash chain</a></td>
+        <td>sha256 vs hash, multimodal-key mixing, parent-hash chaining order.</td>
+        <td>Synthetic prefix-sharing trace · hit-rate × throughput; 1B-token collision oracle</td>
+        <td><span class="pill pill-risk-high">med-high</span></td><td><span class="pill pill-rank">#3</span></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/C_kv_cache_manager.html">C</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noreferrer">kv_cache_manager.py :: allocate_slots</a></td>
+        <td>Block-fit lookahead heuristic.</td>
+        <td>KV-cache stress test · OOM/preempt rate</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/C_kv_cache_manager.html">C</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noreferrer">kv_cache_manager.py :: get_computed_blocks · get_num_common_prefix_blocks</a></td>
+        <td>Prefix-cache lookup + cascade-attention enabling.</td>
+        <td>Synthetic shared-prefix workload · hit rate</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/C_kv_cache_manager.html">C</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/block_pool.py" target="_blank" rel="noreferrer">block_pool.py :: LRU eviction</a></td>
+        <td>Eviction priority (LRU↔LFU↔Belady-approx↔learned).</td>
+        <td>Same · hit rate at low budget</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- E · Attention (3 rows) -->
+      <tr data-risk="medium"><td><a href="modules/E_attention_backends.html">E</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flashinfer.py" target="_blank" rel="noreferrer">flashinfer.py :: FlashInferMetadataBuilder.build + plan()</a></td>
+        <td>Cascade vs flat, prefill_fixed_split_size, disable_split_kv, TRTLLM vs FA dispatch.</td>
+        <td>Long-context attn bench (4k→128k) · kernel ms</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td><span class="pill pill-rank">#8</span></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/E_attention_backends.html">E</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flash_attn.py" target="_blank" rel="noreferrer">flash_attn.py :: FA-version dispatch</a></td>
+        <td>FA2/3/4 selection per shape — currently arch-based.</td>
+        <td>Microbench grid · kernel ms</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="high"><td><a href="modules/E_attention_backends.html">E</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/backends/mla" target="_blank" rel="noreferrer">mla/ :: prefill/decode dispatch</a></td>
+        <td>Multi-head Latent Attention dispatch for DeepSeek-V2/V3.</td>
+        <td>DeepSeek-V3 e2e · kernel ms + correctness</td>
+        <td><span class="pill pill-risk-high">high</span></td><td></td></tr>
+
+      <!-- F · Sampling (3 rows) -->
+      <tr data-risk="low"><td><a href="modules/F_sampling.html">F</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/sample/ops/topk_topp_sampler.py" target="_blank" rel="noreferrer">topk_topp_sampler.py :: forward_cuda + apply_top_k_only</a></td>
+        <td>Replace mixed sort + FlashInfer-rejection + reduce path.</td>
+        <td>Microbench (vocab × bs × k) · ms; Kolmogorov-Smirnov correctness</td>
+        <td><span class="pill pill-risk-low">low</span></td><td><span class="pill pill-rank">#5</span></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/F_sampling.html">F</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/sample/rejection_sampler.py" target="_blank" rel="noreferrer">rejection_sampler.py :: rejection_greedy_sample_kernel + expand_kernel</a></td>
+        <td>Triton block sizes, MAX_NUM_TOKENS unrolling, fused-vs-split apply_sampling_constraints.</td>
+        <td>Spec-decode microbench · ms/draft-token</td>
+        <td><span class="pill pill-risk-low">low</span></td><td><span class="pill pill-rank">#6</span></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/F_sampling.html">F</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/sample/ops" target="_blank" rel="noreferrer">ops/ :: penalties.py · bad_words.py · logprobs.py</a></td>
+        <td>Repetition / frequency / presence penalties + bad-words mask Triton kernel.</td>
+        <td>Microbench at varying penalty-density · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- G · Spec Decode (3 rows) -->
+      <tr data-risk="medium"><td><a href="modules/G_speculative_decoding.html">G</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/llm_base_proposer.py" target="_blank" rel="noreferrer">llm_base_proposer.py :: adaptive draft-length</a></td>
+        <td>Per-request <code>num_speculative_tokens</code> from acceptance history.</td>
+        <td><code>spec_decode.py</code> on InstructCoder + MT-Bench · tokens/sec, AL</td>
+        <td><span class="pill pill-risk-medium">low–med</span></td><td><span class="pill pill-rank">#4</span></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/G_speculative_decoding.html">G</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/worker/gpu/spec_decode/eagle" target="_blank" rel="noreferrer">worker/gpu/spec_decode/eagle/ :: tree topology</a></td>
+        <td>EAGLE-2 dynamic draft trees + EAGLE-3 pruning rule.</td>
+        <td>e2e serving with EAGLE-3 + CUDA graphs · tokens/sec</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/G_speculative_decoding.html">G</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/spec_decode/ngram_proposer.py" target="_blank" rel="noreferrer">ngram_proposer.py :: prompt_lookup_min/max</a></td>
+        <td>Static n-gram window → context-aware function.</td>
+        <td>Spec-decode bench · AL</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- J · Compilation (3 rows) -->
+      <tr data-risk="low"><td><a href="modules/J_compilation_cuda_graphs.html">J</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/cuda_graph.py" target="_blank" rel="noreferrer">cuda_graph.py + piecewise_backend.py :: mode dispatcher</a></td>
+        <td>FULL vs PIECEWISE vs FULL_AND_PIECEWISE per (model_size, attn_backend, batch_shape).</td>
+        <td><code>vllm bench latency</code> · p50/p99 + capture mem</td>
+        <td><span class="pill pill-risk-low">low</span></td><td><span class="pill pill-rank">#7</span></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/J_compilation_cuda_graphs.html">J</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/piecewise_backend.py" target="_blank" rel="noreferrer">piecewise_backend.py :: compile_sizes</a></td>
+        <td>cudagraph_capture_sizes set + autotuned defaults.</td>
+        <td>Same · latency + capture mem</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/J_compilation_cuda_graphs.html">J</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/partition_rules.py" target="_blank" rel="noreferrer">partition_rules.py :: Inductor partition</a></td>
+        <td>Graph-partition boundaries (torch≥2.9).</td>
+        <td>e2e latency · capture overhead</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- K · Quantization (3 rows) -->
+      <tr data-risk="low"><td><a href="modules/K_quantization.html">K</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/quantization/utils" target="_blank" rel="noreferrer">marlin_utils*.py :: GEMM auto-selection</a></td>
+        <td>(M,K,N,group,bits,dtype) → kernel decision tree (PR #7174 open work).</td>
+        <td><code>benchmark_machete.py</code> / <code>benchmark_marlin.py</code> · per-shape ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td><span class="pill pill-rank">#9</span></td></tr>
+
+      <tr data-risk="high"><td><a href="modules/K_quantization.html">K</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/csrc/quantization/machete" target="_blank" rel="noreferrer">csrc/quantization/machete/ :: CuTe tile templates</a></td>
+        <td>C++/CuTe tile-size templates.</td>
+        <td>Same · ms (rebuild cost ~10–100×)</td>
+        <td><span class="pill pill-risk-high">med-high</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/K_quantization.html">K</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/fp8.py" target="_blank" rel="noreferrer">fp8.py :: granularity selection</a></td>
+        <td>Per-tensor ↔ per-token ↔ block FP8.</td>
+        <td>Per-shape ms + lm_eval accuracy</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- L · MoE (3 rows) -->
+      <tr data-risk="low"><td><a href="modules/L_moe.html">L</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/fused_moe/configs" target="_blank" rel="noreferrer">fused_moe/configs/*.json + fused_moe.py</a></td>
+        <td>Per-(E,N,GPU) BLOCK_M / N / K / GROUP_M / num_warps / num_stages.</td>
+        <td><code>benchmark_moe.py</code> · ms/iter (M ∈ {1,16,64,256,1024,4096})</td>
+        <td><span class="pill pill-risk-low">low</span></td><td><span class="pill pill-rank">#1</span></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/L_moe.html">L</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/moe_align_block_size.py" target="_blank" rel="noreferrer">moe_align_block_size.py</a></td>
+        <td>Token-routing prep — CUDA-graph-compliant variant has knobs (PR #12036).</td>
+        <td>Microbench · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/L_moe.html">L</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/fused_moe/triton_cutlass_moe.py" target="_blank" rel="noreferrer">triton_cutlass_moe / triton_deep_gemm_moe / flashinfer_cutlass_moe :: backend dispatch</a></td>
+        <td>Backend selection + per-backend tile sizes per (M,K,N,E,top-k,dtype,device).</td>
+        <td>Microbench · ms/token</td>
+        <td><span class="pill pill-risk-medium">low–med</span></td><td></td></tr>
+
+      <!-- A · Engine Core (3 rows) -->
+      <tr data-risk="medium"><td><a href="modules/A_engine_core.html">A</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/core.py" target="_blank" rel="noreferrer">engine/core.py :: busy-loop pacing</a></td>
+        <td>Loop pacing function (sleep/poll heuristic).</td>
+        <td>Idle CPU%, TTFT under bursts</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/A_engine_core.html">A</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/parallel_sampling.py" target="_blank" rel="noreferrer">engine/parallel_sampling.py :: fan-out batching</a></td>
+        <td>How n&gt;1 requests fan out into the batch.</td>
+        <td>KV-cache reuse + step latency</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/A_engine_core.html">A</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/coordinator.py" target="_blank" rel="noreferrer">engine/coordinator.py :: DP rebalancing</a></td>
+        <td>Data-parallel rank assignment under skewed loads.</td>
+        <td>Throughput under skew</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- D · Worker (3 rows) -->
+      <tr data-risk="medium"><td><a href="modules/D_worker_model_runner.html">D</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu_input_batch.py" target="_blank" rel="noreferrer">gpu_input_batch.py :: input prep</a></td>
+        <td>Numpy-heavy slot-mapping + input ID layout.</td>
+        <td>Microbench · CPU step ms</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/D_worker_model_runner.html">D</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/ubatching.py" target="_blank" rel="noreferrer">ubatching.py :: µbatch split rule</a></td>
+        <td>µbatch split for compute/comm overlap.</td>
+        <td>e2e tokens/sec under PP</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/D_worker_model_runner.html">D</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu/cudagraph_utils.py" target="_blank" rel="noreferrer">worker/gpu/cudagraph_utils.py :: CudaGraphManager (MRV2)</a></td>
+        <td>Capture set + replay strategy (MRV2).</td>
+        <td><code>vllm bench latency</code> · p50/p99</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- H · Structured Output (2 rows) -->
+      <tr data-risk="low"><td><a href="modules/H_structured_output.html">H</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/structured_output" target="_blank" rel="noreferrer">structured_output/ :: backend selection</a></td>
+        <td>xgrammar vs outlines vs guidance vs lm-format-enforcer dispatch.</td>
+        <td>Mask-construction ms · per-step overhead at high QPS</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/H_structured_output.html">H</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/structured_output/backend_xgrammar.py" target="_blank" rel="noreferrer">backend_xgrammar.py :: has_xgrammar_unsupported_json_features</a></td>
+        <td>Static feature list → probabilistic acceptance tester.</td>
+        <td>JSON-schema benchmark · acceptance + ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- I · Distributed (3 rows) -->
+      <tr data-risk="medium"><td><a href="modules/I_distributed_kv_connector.html">I</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/distributed/kv_transfer/kv_connector/v1" target="_blank" rel="noreferrer">kv_connector/v1/ :: transfer policy</a></td>
+        <td>Push vs pull + chunking for prefill→decode KV transfer.</td>
+        <td>Disaggregated serving · TTFT, KV-transfer ms</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/I_distributed_kv_connector.html">I</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu/pp_utils.py" target="_blank" rel="noreferrer">worker/gpu/pp_utils.py :: PP overlap</a></td>
+        <td>µbatch ordering + AsyncIntermediateTensors stride.</td>
+        <td>e2e tokens/sec under PP</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="high"><td><a href="modules/I_distributed_kv_connector.html">I</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu/eplb_utils.py" target="_blank" rel="noreferrer">worker/gpu/eplb_utils.py + dp_utils.py :: EP/DP routing</a></td>
+        <td>Expert-parallel load-balancing for MoE.</td>
+        <td>MoE serving bench · throughput under skew</td>
+        <td><span class="pill pill-risk-high">med-high</span></td><td></td></tr>
+
+      <!-- M · LoRA (2 rows) -->
+      <tr data-risk="medium"><td><a href="modules/M_lora.html">M</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/lora_model_runner_mixin.py" target="_blank" rel="noreferrer">lora_model_runner_mixin.py :: dispatch in scheduler</a></td>
+        <td>Co-locate requests by adapter; LoRA-bank cache eviction.</td>
+        <td>Multi-tenant LoRA bench · throughput at fixed cache budget</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/M_lora.html">M</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/lora" target="_blank" rel="noreferrer">lora/ :: SGMV kernel parameters</a></td>
+        <td>Triton block sizes for SGMV.</td>
+        <td>Microbench · ms/token</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- N · Multimodal (2 rows) -->
+      <tr data-risk="medium"><td><a href="modules/N_multimodal.html">N</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/encoder_cache_manager.py" target="_blank" rel="noreferrer">encoder_cache_manager.py :: eviction</a></td>
+        <td>Recency vs shared-count vs encoder-cost.</td>
+        <td>VLM serving · encoder-cache hit rate, e2e tput</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/N_multimodal.html">N</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/encoder_cudagraph.py" target="_blank" rel="noreferrer">encoder_cudagraph.py :: ViT capture set</a></td>
+        <td>Image-tile shape histogram → capture-size schedule.</td>
+        <td>VLM bench · latency + capture mem</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- O · Pooling (1 row) -->
+      <tr data-risk="low"><td><a href="modules/O_pooling_embedding.html">O</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/pool" target="_blank" rel="noreferrer">v1/pool/ :: pooling kernel choice</a></td>
+        <td>Mean/max/CLS/last-token fused vs separate.</td>
+        <td>Microbench · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <!-- P · Cascade (2 rows) -->
+      <tr data-risk="medium"><td><a href="modules/P_cascade_attention.html">P</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flashinfer.py#L1148" target="_blank" rel="noreferrer">flashinfer.py L1148–1198 :: cascade cutoff</a></td>
+        <td>Cascade-vs-flat threshold over (siblings, common_prefix_len, head_dim, bs).</td>
+        <td>Long-ctx shared-prefix bench · kernel ms + tol</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/P_cascade_attention.html">P</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flash_attn.py#L741" target="_blank" rel="noreferrer">flash_attn.py L741–767 :: cascade in FA</a></td>
+        <td>FA-path cascade gate (co-evolve with FlashInfer).</td>
+        <td>Same</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+      <!-- Q · Custom Ops (4 rows) -->
+      <tr data-risk="low"><td><a href="modules/Q_custom_ops.html">Q</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py" target="_blank" rel="noreferrer">rotary_embedding.py + attention/ops :: RoPE</a></td>
+        <td>Triton tile sizes / fused variants.</td>
+        <td>Microbench across (head_dim, num_heads, seq_len) · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/Q_custom_ops.html">Q</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/layernorm.py" target="_blank" rel="noreferrer">layernorm.py :: RMSNorm fused</a></td>
+        <td>Fused-add-RMSNorm — Hopper/Blackwell headroom.</td>
+        <td>Microbench · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="low"><td><a href="modules/Q_custom_ops.html">Q</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/activation.py" target="_blank" rel="noreferrer">activation.py :: SiLU+mul (SwiGLU)</a></td>
+        <td>Fused SwiGLU kernel.</td>
+        <td>Microbench · ms</td>
+        <td><span class="pill pill-risk-low">low</span></td><td></td></tr>
+
+      <tr data-risk="medium"><td><a href="modules/Q_custom_ops.html">Q</a></td>
+        <td><a href="https://github.com/vllm-project/vllm/tree/main/csrc" target="_blank" rel="noreferrer">csrc/attention/ :: paged-attention V1/V2</a></td>
+        <td>C++/CUDA kernel — high rebuild cost; prefer Triton variants first.</td>
+        <td>Microbench · ms</td>
+        <td><span class="pill pill-risk-medium">medium</span></td><td></td></tr>
+
+    </tbody>
+  </table>
+
+  <p style="margin-top:18px;font-size:13px;color:var(--text-muted)">
+    <strong>40 evolve locations</strong> across 17 modules · <strong>10 marked as top-10 ROI</strong> ·
+    <a href="methodology.html">see Methodology</a> for the staged plan and meta-paper layer.
+  </p>
+
+  <p style="margin-top:32px;font-size:13px;">
+    <a href="index.html">← Overview</a> ·
+    <a href="architecture.html">Architecture</a> ·
+    <a href="methodology.html">Methodology</a> ·
+    <a href="index.html#modules">Modules</a>
+  </p>
+
+  <script>
+    let activeRisk = 'all';
+    function setRisk(r, ev) {
+      activeRisk = r;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      ev.currentTarget.classList.add('active');
+      filter();
+    }
+    function filter() {
+      const q = (document.getElementById('invSearch').value || '').toLowerCase();
+      const rows = document.querySelectorAll('.inv-table tbody tr');
+      let shown = 0;
+      rows.forEach(r => {
+        const txt = r.textContent.toLowerCase();
+        const risk = r.dataset.risk;
+        const riskOk = (activeRisk === 'all') || (risk === activeRisk);
+        const qOk = !q || txt.includes(q);
+        const visible = riskOk && qOk;
+        r.classList.toggle('hidden', !visible);
+        if (visible) shown++;
+      });
+      document.getElementById('invCount').textContent = shown + ' of ' + rows.length + ' rows';
+    }
+    filter();
+  </script>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

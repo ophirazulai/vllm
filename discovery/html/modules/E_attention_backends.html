@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E · V1 Attention Backends · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/backends" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>E · V1 Attention Backends
+    <span class="subtitle">FA2/3/4 dispatch, FlashInfer (TRTLLM-GEN), Triton, MLA prefill/decode, mamba/linear-attn variants.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/attention/backends/</code><br>
+       <strong>Key files (verified):</strong> <code>flash_attn.py</code> (FA2/3/4 dispatch; <code>_forward_encoder_attention</code>,
+       <code>forward</code>, FP8 KV-cache, cascade attention <code>lines 741–767</code>), <code>flash_attn_diffkv.py</code>,
+       <code>flashinfer.py</code> (<code>FlashInferMetadataBuilder</code>, <code>plan()</code>, cascade <code>1148–1198</code>,
+       CUDA-graph capture <code>656–694</code>, <code>BatchPrefillWithPagedKVCacheWrapper</code> for mixed prefill+decode),
+       <code>fa_utils.py</code>, <code>triton_attn.py</code>, <code>flex_attention.py</code>, <code>tree_attn.py</code>,
+       <code>turboquant_attn.py</code>, <code>mla/</code> (Multi-head Latent Attention for DeepSeek-V2/V3 — separate prefill/decode backends),
+       <code>mamba_attn.py</code>, <code>mamba1_attn.py</code>, <code>mamba2_attn.py</code>, <code>linear_attn.py</code>,
+       <code>gdn_attn.py</code>, <code>short_conv_attn.py</code>, <code>cpu_attn.py</code>, <code>rocm_attn.py</code>,
+       <code>rocm_aiter_fa.py</code>, <code>rocm_aiter_unified_attn.py</code>, <code>registry.py</code> (<code>AttentionBackendEnum</code>),
+       <code>utils.py</code>.<br>
+       <strong>Default selection</strong> (per <code>docs.vllm.ai/en/latest/design/attention_backends/</code>):
+       FA4 on SM100+ (Blackwell), FA3 on SM90 (Hopper), FA2 otherwise; FlashInfer uses TRTLLM-GEN attention on Blackwell.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> <span class="pill pill-rank">target #8</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>FlashInferMetadataBuilder.build + plan() <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flashinfer.py" target="_blank" rel="noreferrer">vllm/v1/attention/backends/flashinfer.py</a></div>
+    <p>The choice between cascade vs flat attention, the <code>prefill_fixed_split_size</code>, <code>disable_split_kv</code>,
+       and the TRTLLM-vs-FlashAttention dispatch on Blackwell — currently a hand-coded if/elif lattice.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Decision lattice mapping (seq_len, batch_size, prefix_share, hardware_arch) → backend variant + split sizes.</dd>
+      <dt>Evaluator</dt><dd>Long-context attention benchmark (4k → 128k) against the existing reference output.</dd>
+      <dt>Metric</dt><dd>Kernel-only latency.</dd>
+      <dt>Correctness</dt><dd>Element-wise tolerance.</dd>
+      <dt>Risk</dt><dd>Medium — must not break MLA/Sparse paths.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>FlashAttention version dispatch (FA2 / FA3 / FA4) <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flash_attn.py" target="_blank" rel="noreferrer">vllm/v1/attention/backends/flash_attn.py</a></div>
+    <p>FA-version selection per shape — currently hardware-arch based, but at the edges (very small batch, very long context)
+       the optimal choice can flip.</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>Kernel ms.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>MLA prefill/decode dispatch <span class="pill pill-risk-high">risk: high</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/backends/mla" target="_blank" rel="noreferrer">vllm/v1/attention/backends/mla/</a></div>
+    <p>Separate prefill and decode backends for DeepSeek-V2/V3.</p>
+    <dl class="kv-grid">
+      <dt>Risk</dt><dd>High — DeepSeek correctness regressions are visible end-to-end.</dd>
+    </dl>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Dao et al. — FlashAttention: Fast and Memory-Efficient Exact Attention.</span> <span class="paper-meta">NeurIPS 2022.</span> <span class="paper-id">arXiv:2205.14135</span></li>
+    <li><span class="paper-title">Dao — FlashAttention-2.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2307.08691</span></li>
+    <li><span class="paper-title">Shah, Bikshandi, Zhang, Thakkar, Ramani, Dao — FlashAttention-3.</span> <span class="paper-meta">NeurIPS 2024.</span> <span class="paper-id">arXiv:2407.08608</span> <span class="paper-direction">Hopper warp-specialization, FP8 incoherent processing. Evolve tile-shape &amp; pipeline-stage knobs for FA-style kernels.</span></li>
+    <li><span class="paper-title">Ye, Chen et al. — FlashInfer.</span> <span class="paper-meta">MLSys 2025 (best paper).</span> <span class="paper-id">arXiv:2501.01005</span></li>
+    <li><span class="paper-title">Hong et al. — FlexAttention / Flex.</span> <span class="paper-meta">PyTorch 2024.</span></li>
+    <li><span class="paper-title">DeepSeek-AI — DeepSeek-V2: MLA + DeepSeekMoE.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2405.04434</span></li>
+    <li><span class="paper-title">NVIDIA — TRT-LLM / TRTLLM-GEN attention.</span> <span class="paper-meta">Tech reports 2024–25.</span></li>
+    <li><span class="paper-title">Liu et al. — Lightning Attention-2.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.04658</span></li>
+    <li><span class="paper-title">Ainslie et al. — GQA: Multi-Query → Grouped-Query Attention.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2305.13245</span></li>
+    <li><span class="paper-title">Pope et al. — Efficiently Scaling Transformer Inference.</span> <span class="paper-meta">MLSys 2023.</span></li>
+    <li><span class="paper-title">Beltagy et al. — Longformer / sliding-window attention.</span> <span class="paper-meta">2020.</span> <span class="paper-id">arXiv:2004.05150</span></li>
+    <li><span class="paper-title">Press et al. — ALiBi.</span> <span class="paper-meta">2021.</span> <span class="paper-id">arXiv:2108.12409</span></li>
+    <li><span class="paper-title">Sun et al. — POD-Attention: Fused Prefill+Decode.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2410.18038</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="D_worker_model_runner.html">
+      <span class="nav-label">← Prev · D</span>
+      <span class="nav-title">V1 Worker / Model Runner</span>
+    </a>
+    <a class="next" href="F_sampling.html">
+      <span class="nav-label">Next · F →</span>
+      <span class="nav-title">V1 Sampling</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

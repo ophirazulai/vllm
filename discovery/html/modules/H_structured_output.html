@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>H · V1 Structured Output · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/structured_output" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>H · V1 Structured Output
+    <span class="subtitle">XGrammar (default), outlines, guidance, lm-format-enforcer fallbacks. Mask construction can dominate at high QPS.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/structured_output/</code><br>
+       <strong>Key files (verified):</strong> <code>backend_xgrammar.py</code> (<code>has_xgrammar_unsupported_json_features</code>,
+       <code>validate_xgrammar_grammar</code>, FSM step), <code>backend_outlines.py</code>, <code>backend_guidance.py</code>,
+       <code>backend_lm_format_enforcer.py</code>, <code>backend_types.py</code>, <code>request.py</code>, <code>utils.py</code>.<br>
+       <strong>Manager:</strong> <code>StructuredOutputManager</code> (imported by scheduler).</p>
+    <p>xgrammar is the default; the rest provide fallbacks per the V1 user guide.</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: medium</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Backend selection / dispatch <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/structured_output" target="_blank" rel="noreferrer">vllm/v1/structured_output/backend_*.py</a></div>
+    <p>Selecting xgrammar vs outlines vs guidance vs lm-format-enforcer per request based on grammar shape (regex vs JSON-schema vs CFG).</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Dispatch heuristic over (grammar_kind, schema_depth, vocab_size, expected_output_length).</dd>
+      <dt>Metric</dt><dd>Mask-construction ms; per-step overhead at high QPS.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>has_xgrammar_unsupported_json_features <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/structured_output/backend_xgrammar.py" target="_blank" rel="noreferrer">vllm/v1/structured_output/backend_xgrammar.py</a></div>
+    <p>Grammar-acceptance heuristic — currently a static feature list. Could be evolved into a probabilistic acceptance tester
+       (covers fewer JSON Schemas with larger fallbacks, but lower latency on the happy path).</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Dong et al. — XGrammar: Flexible and Efficient Structured Generation.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2411.15100</span></li>
+    <li><span class="paper-title">Willard &amp; Louf — Outlines: Efficient Guided Generation.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2307.09702</span></li>
+    <li><span class="paper-title">Microsoft — Guidance / llguidance.</span> <span class="paper-meta">GitHub.</span></li>
+    <li><span class="paper-title">Park et al. — SGLang Compressed FSM.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2312.07104</span></li>
+    <li><span class="paper-title">Ye et al. — FlashInfer (sorting-free sampling).</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2501.01005</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="G_speculative_decoding.html">
+      <span class="nav-label">← Prev · G</span>
+      <span class="nav-title">V1 Speculative Decoding</span>
+    </a>
+    <a class="next" href="I_distributed_kv_connector.html">
+      <span class="nav-label">Next · I →</span>
+      <span class="nav-title">Distributed / KV+EC Connector</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

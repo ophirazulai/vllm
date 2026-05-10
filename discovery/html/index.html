@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM V1 × Evolutionary Code Search — Discovery Map</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title">
+      <span class="logo">vL</span>
+      <a href="index.html">vLLM V1 × Evolutionary Code Search</a>
+    </h1>
+    <nav class="site-nav">
+      <a href="index.html" class="active">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="inventory.html">Inventory</a>
+      <a href="methodology.html">Methodology</a>
+      <a href="#modules">Modules</a>
+      <a href="https://github.com/vllm-project/vllm" target="_blank" rel="noreferrer">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>An Optimization-Candidate Map and Literature Review
+    <span class="subtitle">vLLM V1 — locations primed for FunSearch / AlphaEvolve / OpenEvolve-style program search.</span>
+  </h1>
+
+  <section class="hero">
+    <p>vLLM V1 is a re-architected serving engine (alpha released Jan 27, 2025; default since v0.8.x) organized
+       around a multi-process design: an <strong>API server</strong> process, an <strong>EngineCore</strong> process running the
+       scheduler + KV-cache manager, and one <strong>GPU worker</strong> process per device.
+       Stable models, kernels, and distributed plumbing were inherited from V0; the <em>new</em> code that matters
+       for evolutionary search lives almost exclusively under <code>vllm/v1/</code>, plus the still-shared
+       <code>vllm/model_executor/layers/</code> (kernels, MoE, quantization), <code>vllm/attention/ops/</code>
+       and <code>vllm/compilation/</code>.</p>
+
+    <p>The highest-ROI evolve targets cluster around four families:
+       <strong>(1)</strong> heuristic decision logic with clear scalar rewards (scheduler, prefix-cache eviction,
+       speculative-decoding draft policy, CUDA-graph dispatch);
+       <strong>(2)</strong> Triton kernels with measurable latency (fused MoE, sampling, quantized GEMMs);
+       <strong>(3)</strong> <code>@triton.autotune</code> / JSON-config search spaces (per-shape MoE configs);
+       <strong>(4)</strong> numerical–performance trade-offs (KV-cache compression, FP8 quantization, hash choice).</p>
+
+    <p class="anchor">
+      <strong>Repository anchor:</strong> verified against local HEAD <code>e6ff3e9c8</code>
+      (<code>git rev-parse HEAD</code>, May 2026). <code>vllm/v1/core/sched/scheduler.py</code> is 2,295 LoC at this anchor.
+      Re-run <code>git rev-parse HEAD</code> and <code>wc -l</code> before driving evolutionary search — this codebase changes weekly.
+    </p>
+  </section>
+
+  <h2 id="top-targets">Recommended First Targets</h2>
+  <p class="section-intro">
+    Ten highest-ROI evolve candidates, ordered by expected ROI (function isolation × clean fitness signal × literature headroom × maintenance risk).
+  </p>
+
+  <ol class="top-targets">
+    <li>
+      <div class="target-title">
+        Fused-MoE Triton kernel autotune configs
+        <span class="pill pill-risk-low">risk: low</span>
+      </div>
+      <div class="target-path">vllm/model_executor/layers/fused_moe/configs/*.json + fused_moe.py</div>
+      <p class="target-desc">Per-(num_experts E, intermediate-size N, GPU device) JSON configs that select
+         <code>BLOCK_M / BLOCK_N / BLOCK_K / GROUP_M / num_warps / num_stages</code>. Small structured space, hand-tuned grid misses optima.
+         Evaluator: <code>benchmarks/kernels/benchmark_moe.py</code>. Literature gain: 1.5–2.5× over vendor defaults
+         (GEAK-OpenEvolve, Kernel-Smith). → <a href="modules/L_moe.html">MoE module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Scheduler waiting-queue ordering policy
+        <span class="pill pill-risk-high">risk: high</span>
+      </div>
+      <div class="target-path">vllm/v1/core/sched/scheduler.py :: Scheduler.schedule (line 352, file 2,295 LoC)</div>
+      <p class="target-desc">Heuristic that selects which waiting request to admit next, the chunked-prefill chunk-sizing rule,
+         the preemption victim selection, and the <code>skipped_waiting</code> re-queue logic (issue #27441).
+         Evaluator: <code>benchmarks/benchmark_serving.py</code> on ShareGPT, Mooncake-Conversation, BurstGPT.
+         AlphaEvolve precedent: discovered datacenter scheduler that recovered 0.7% of Google compute. → <a href="modules/B_scheduler.html">Scheduler module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Prefix-cache block-hash strategy
+        <span class="pill pill-risk-high">risk: medium-high</span>
+      </div>
+      <div class="target-path">vllm/v1/core/kv_cache_utils.py + vllm/v1/core/block_pool.py</div>
+      <p class="target-desc">Block-hash function chain (<code>sha256</code> vs <code>hash</code>, multimodal extra-key mixing,
+         parent-hash chaining order) and LRU/cached-block eviction priority. Correctness oracle: 1B-token collision tests.
+         Literature: RadixAttention, Hydragen, ChunkAttention, MemServe/Mooncake. → <a href="modules/C_kv_cache_manager.html">KV-Cache module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Speculative-decoding draft-length / acceptance policy
+        <span class="pill pill-risk-medium">risk: low–medium</span>
+      </div>
+      <div class="target-path">vllm/v1/spec_decode/llm_base_proposer.py + ngram_proposer.py + dflash.py</div>
+      <p class="target-desc">Per-request adaptive <code>num_speculative_tokens</code>, ngram <code>prompt_lookup_min/max</code>, EAGLE chain-vs-tree topology.
+         Evaluator: <code>examples/offline_inference/spec_decode.py</code> on InstructCoder + MT-Bench. Wrong draft length only affects latency,
+         never correctness. → <a href="modules/G_speculative_decoding.html">Spec-Decode module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Top-k / top-p sampling kernel
+        <span class="pill pill-risk-low">risk: low</span>
+      </div>
+      <div class="target-path">vllm/v1/sample/ops/topk_topp_sampler.py :: forward_cuda + apply_top_k_only</div>
+      <p class="target-desc">Replacement of the <code>forward_cuda</code> top-k/top-p path (mixes sort, FlashInfer rejection-sampling, reduce).
+         FlashInfer "sorting-free GPU sampling" blog (Mar 2025) suggests real headroom. Correctness via Kolmogorov-Smirnov.
+         → <a href="modules/F_sampling.html">Sampling module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Rejection-sampler Triton kernel
+        <span class="pill pill-risk-low">risk: low</span>
+      </div>
+      <div class="target-path">vllm/v1/sample/rejection_sampler.py :: rejection_greedy_sample_kernel + expand_kernel</div>
+      <p class="target-desc">Kernel block sizes, <code>MAX_NUM_TOKENS</code> unrolling, <code>apply_sampling_constraints</code> fused-vs-split strategy.
+         Evaluator: spec-decode microbench. → <a href="modules/F_sampling.html">Sampling module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        CUDA-graph mode dispatcher
+        <span class="pill pill-risk-low">risk: low</span>
+      </div>
+      <div class="target-path">vllm/compilation/cuda_graph.py + vllm/compilation/piecewise_backend.py</div>
+      <p class="target-desc">Set of <code>cudagraph_capture_sizes</code> and FULL vs PIECEWISE vs FULL_AND_PIECEWISE selection rule
+         per (model_size, attention_backend, batch_shape). Currently a static mode flag.
+         Evaluator: <code>vllm bench latency</code> across {Llama-3-8B, 70B, Qwen3-30B-MoE, DeepSeek-V3} × {H100, B200}.
+         → <a href="modules/J_compilation_cuda_graphs.html">Compilation module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        FlashInfer plan() / metadata-builder dispatch
+        <span class="pill pill-risk-medium">risk: medium</span>
+      </div>
+      <div class="target-path">vllm/v1/attention/backends/flashinfer.py :: FlashInferMetadataBuilder.build + plan()</div>
+      <p class="target-desc">Cascade vs flat attention, <code>prefill_fixed_split_size</code>, <code>disable_split_kv</code>,
+         TRTLLM-vs-FlashAttention dispatch on Blackwell. Currently a hand-coded if/elif lattice.
+         → <a href="modules/E_attention_backends.html">Attention module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Quantized GEMM auto-selection (Marlin / Machete / cuBLAS-FP8)
+        <span class="pill pill-risk-low">risk: low</span>
+      </div>
+      <div class="target-path">vllm/model_executor/layers/quantization/utils/marlin_utils*.py</div>
+      <p class="target-desc">Decision tree mapping (M, K, N, group_size, bit-width, dtype) → kernel implementation.
+         Machete PR #7174 explicitly notes "Improve heuristic for 4096×4096" and "Improve batch size <32" as open work.
+         Evaluator: <code>benchmarks/kernels/benchmark_machete.py</code>, <code>benchmark_marlin.py</code>.
+         → <a href="modules/K_quantization.html">Quantization module ↗</a></p>
+    </li>
+
+    <li>
+      <div class="target-title">
+        Block-aligned chunked-prefill split for Mamba/hybrid
+        <span class="pill pill-risk-medium">risk: medium</span>
+      </div>
+      <div class="target-path">vllm/v1/core/sched/scheduler.py :: _mamba_block_aligned_split (line 302)</div>
+      <p class="target-desc">Block-alignment policy for Mamba/hybrid models (Qwen3-Next, Jamba) — currently a hand-coded snap-to-block rule.
+         Evolved rules can balance cache hit rate against unnecessarily small chunks.
+         → <a href="modules/B_scheduler.html">Scheduler module ↗</a></p>
+    </li>
+  </ol>
+
+  <h2 id="modules">Modules</h2>
+  <p class="section-intro">
+    Seventeen module groups (A–Q) covering the full V1 surface. Each card opens a dedicated page with all evolve
+    locations, fitness functions, evaluators, and a curated literature anchor.
+  </p>
+
+  <div class="module-grid">
+
+    <a class="module-card" href="modules/A_engine_core.html">
+      <h3><span class="mod-letter">A</span>V1 Engine Core</h3>
+      <p class="mod-path">vllm/v1/engine/</p>
+      <p class="mod-desc">EngineCore busy loop, async LLM façade, data-parallel coordinator, ZMQ transport. One DP-rank per process.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span></div>
+    </a>
+
+    <a class="module-card" href="modules/B_scheduler.html">
+      <h3><span class="mod-letter">B</span>V1 Scheduler</h3>
+      <p class="mod-path">vllm/v1/core/sched/</p>
+      <p class="mod-desc">Per-step token-budget allocation, chunked prefill, preemption, encoder-input scheduling, structured-output flag propagation.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #2 #10</span></div>
+    </a>
+
+    <a class="module-card" href="modules/C_kv_cache_manager.html">
+      <h3><span class="mod-letter">C</span>V1 KV-Cache Manager</h3>
+      <p class="mod-path">vllm/v1/core/kv_cache_*.py + block_pool.py</p>
+      <p class="mod-desc">Block-paged KV memory, automatic prefix caching with parent-chained hashes, LRU eviction, hybrid memory allocator.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #3</span></div>
+    </a>
+
+    <a class="module-card" href="modules/D_worker_model_runner.html">
+      <h3><span class="mod-letter">D</span>V1 Worker / GPU Model Runner</h3>
+      <p class="mod-path">vllm/v1/worker/ (+ vllm/v1/worker/gpu/ for MRV2)</p>
+      <p class="mod-desc">Persistent batch tensors, input ID/position/slot-mapping, encoder-output cache, model forward, sampler, CUDA-graph capture.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span></div>
+    </a>
+
+    <a class="module-card" href="modules/E_attention_backends.html">
+      <h3><span class="mod-letter">E</span>V1 Attention Backends</h3>
+      <p class="mod-path">vllm/v1/attention/backends/</p>
+      <p class="mod-desc">FA2/3/4 dispatch, FlashInfer (TRTLLM-GEN), Triton, MLA prefill/decode for DeepSeek, mamba/linear-attn variants.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #8</span></div>
+    </a>
+
+    <a class="module-card" href="modules/F_sampling.html">
+      <h3><span class="mod-letter">F</span>V1 Sampling</h3>
+      <p class="mod-path">vllm/v1/sample/</p>
+      <p class="mod-desc">Temperature, top-k/top-p, min-p, FlashInfer fast sampling, rejection-sampler kernel, structured-output mask.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: med-high</span><span class="pill pill-rank">target #5 #6</span></div>
+    </a>
+
+    <a class="module-card" href="modules/G_speculative_decoding.html">
+      <h3><span class="mod-letter">G</span>V1 Speculative Decoding</h3>
+      <p class="mod-path">vllm/v1/spec_decode/ + vllm/v1/worker/gpu/spec_decode/</p>
+      <p class="mod-desc">EAGLE-1/2/3, MTP, ngram (CPU + GPU), Medusa, DFlash, suffix-decoding, draft-model proposer.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: medium</span><span class="pill pill-rank">target #4</span></div>
+    </a>
+
+    <a class="module-card" href="modules/H_structured_output.html">
+      <h3><span class="mod-letter">H</span>V1 Structured Output</h3>
+      <p class="mod-path">vllm/v1/structured_output/</p>
+      <p class="mod-desc">XGrammar (default), outlines, guidance, lm-format-enforcer fallbacks. Mask construction can dominate at high QPS.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: medium</span></div>
+    </a>
+
+    <a class="module-card" href="modules/I_distributed_kv_connector.html">
+      <h3><span class="mod-letter">I</span>Distributed / KV+EC Connector</h3>
+      <p class="mod-path">vllm/distributed/ + vllm/v1/executor/</p>
+      <p class="mod-desc">TP, PP with cached intermediates, DP coordinator, DCP/PCP, EP, P/D disaggregation via NCCL/RDMA/NIXL+UCX.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span></div>
+    </a>
+
+    <a class="module-card" href="modules/J_compilation_cuda_graphs.html">
+      <h3><span class="mod-letter">J</span>Compilation / CUDA Graphs</h3>
+      <p class="mod-path">vllm/compilation/</p>
+      <p class="mod-desc">CUDAGraphWrapper (NONE/PIECEWISE/FULL), PiecewiseBackend, Inductor partition (torch≥2.9). Default: FULL_AND_PIECEWISE.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #7</span></div>
+    </a>
+
+    <a class="module-card" href="modules/K_quantization.html">
+      <h3><span class="mod-letter">K</span>Quantization</h3>
+      <p class="mod-path">vllm/model_executor/layers/quantization/</p>
+      <p class="mod-desc">FP8 per-tensor/channel/token, INT8, AWQ, GPTQ, Marlin, Machete (SM90), MXFP4/MXFP8/NVFP4 via TRT-LLM-Gen, GGUF.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #9</span></div>
+    </a>
+
+    <a class="module-card" href="modules/L_moe.html">
+      <h3><span class="mod-letter">L</span>MoE Stack</h3>
+      <p class="mod-path">vllm/model_executor/layers/fused_moe/</p>
+      <p class="mod-desc">Triton fused-MoE kernel + JSON configs, CUTLASS / DeepGEMM / IBM TMA-grouped backends, modular EP/DP variants.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span><span class="pill pill-rank">target #1</span></div>
+    </a>
+
+    <a class="module-card" href="modules/M_lora.html">
+      <h3><span class="mod-letter">M</span>LoRA (multi-LoRA)</h3>
+      <p class="mod-path">vllm/lora/ + LoRAModelRunnerMixin</p>
+      <p class="mod-desc">S-LoRA / Punica SGMV-style multi-tenant adapters, fused MoE-LoRA paths, reduced kernel overhead via multiple CUDA graphs.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: medium</span></div>
+    </a>
+
+    <a class="module-card" href="modules/N_multimodal.html">
+      <h3><span class="mod-letter">N</span>Multimodal</h3>
+      <p class="mod-path">vllm/multimodal/ + encoder_cache_manager.py</p>
+      <p class="mod-desc">VLM encoder-input scheduling, encoder-output cache, ViT full CUDA graphs, VLM prefix caching.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: med-high</span></div>
+    </a>
+
+    <a class="module-card" href="modules/O_pooling_embedding.html">
+      <h3><span class="mod-letter">O</span>Pooling / Embedding (V1)</h3>
+      <p class="mod-path">vllm/v1/pool/ + RFC #12249</p>
+      <p class="mod-desc">Partial V1 support — pooling models gained MRV2 support (#35120). Hidden-states processor still tracked under RFC #12249.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: medium</span></div>
+    </a>
+
+    <a class="module-card" href="modules/P_cascade_attention.html">
+      <h3><span class="mod-letter">P</span>Cascade Attention</h3>
+      <p class="mod-path">flash_attn.py:741–767 + flashinfer.py:1148–1198</p>
+      <p class="mod-desc">Implementation inside attention backends; driven by <code>Scheduler.get_num_common_prefix_blocks()</code>.</p>
+      <div class="mod-meta"><span class="pill pill-crit-medium">criticality: medium</span></div>
+    </a>
+
+    <a class="module-card" href="modules/Q_custom_ops.html">
+      <h3><span class="mod-letter">Q</span>Custom Triton/CUDA Ops</h3>
+      <p class="mod-path">vllm/attention/ops/ + csrc/</p>
+      <p class="mod-desc">RoPE, RMSNorm, fused activations, paged-attention V1/V2 kernels, sampling kernels, all-reduce custom ops.</p>
+      <div class="mod-meta"><span class="pill pill-crit-high">criticality: high</span></div>
+    </a>
+
+  </div>
+
+  <h2>Recommended Staged Plan</h2>
+  <h3>Stage 1 — Lowest-risk wins (week 1–2)</h3>
+  <ul class="clean">
+    <li>Start OpenEvolve on <strong>fused-MoE JSON configs</strong> (target #1) for one (E, N, GPU) tuple already used in production
+        (DeepSeek-V3 / H100, Qwen3-MoE / B200). Benchmark already exists; falling back to <code>configs/E=...</code> is trivial.</li>
+    <li>In parallel, run OpenEvolve on <strong>top-k/top-p forward_cuda</strong> (target #5) using a microbench.</li>
+    <li><strong>Threshold to escalate:</strong> ≥10% median latency improvement at iso-correctness.</li>
+  </ul>
+
+  <h3>Stage 2 — Medium-risk algorithmic targets (week 3–6)</h3>
+  <ul class="clean">
+    <li>Evolve the <strong>scheduler waiting-queue ordering</strong> (target #2) and <strong>spec-decode draft-length policy</strong> (target #4)
+        inside a sandbox exposing only a restricted Python API
+        (<code>Request.priority</code>, <code>arrival_time</code>, <code>num_prompt_tokens</code>, <code>num_computed_tokens</code>,
+        <code>kv_cache_utilization</code>, <code>running_lora_count</code>, <code>acceptance_history</code>).</li>
+    <li><strong>Threshold:</strong> Pareto-dominate the current FCFS+chunked-prefill baseline on (TTFT p99, TPOT p99, throughput) on ≥2 of 3 traces.</li>
+  </ul>
+
+  <h3>Stage 3 — High-risk / high-reward (month 2+)</h3>
+  <ul class="clean">
+    <li>Evolve <strong>prefix-cache hash function</strong> (target #3) and <strong>CUDA-graph mode/size dispatcher</strong> (target #7).
+        Require strong correctness oracles: collision tests, full vLLM unit-test suite, lm_eval accuracy parity.</li>
+    <li>Evolve <strong>Marlin/Machete shape-dispatch heuristic</strong> (target #9) — likely highest dollar-impact target,
+        sits in every quantized GEMM call in production.</li>
+  </ul>
+
+  <h3>Methodological notes</h3>
+  <ul class="clean">
+    <li>Use <strong>OpenEvolve with MAP-Elites archive</strong> keyed on (batch-size bucket, sequence-length bucket) — Kernel-Smith and KernelFoundry both report this is essential for kernel evolution.</li>
+    <li>Inject <strong>profiler feedback</strong> (NCU for kernels, Prometheus metrics for scheduler) — CUDA-L2 / CudaForge report ~2× sample-efficiency gain.</li>
+    <li>Always run a <strong>multi-trace evaluator</strong>; robust-kbench (Sakana 2025) shows single-input kernels often achieve illusory 50–120× speedups via benchmark exploits.</li>
+    <li>Co-evaluate <strong>accuracy preservation</strong> (<code>lm-eval</code> on a held-out set) for any candidate touching numerics.</li>
+    <li>Use <strong>vLLM's existing CI suite as a correctness gate</strong> before any candidate is committed.</li>
+  </ul>
+
+  <div class="callout warn" style="margin-top: 28px;">
+    <strong>Caveats.</strong> No experimental results in this report — this is a <em>map</em>, not a measurement study.
+    Expected-gain numbers come from cited literature, not from running OpenEvolve on vLLM. The first concrete experiment
+    (Stage 1, fused-MoE configs) is the cheapest way to ground these estimates. Several cited 2026 papers (Kernel-Smith,
+    KernelFoundry, KernelEvolve, P-EAGLE, etc.) are still preprints — re-verify final venue/version. vLLM is mid-migration
+    to MRV2 (<code>vllm/v1/worker/gpu/</code>); evolve targets should track MRV2 paths where possible to avoid bit-rot.
+  </div>
+
+</main>
+
+<footer class="site-footer">
+  Generated from <code>discovery/vllm_discovery.md</code> · Verified at HEAD <code>e6ff3e9c8</code> · 2026-05
+</footer>
+
+</body>
+</html>

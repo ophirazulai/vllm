@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>N · Multimodal · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/multimodal" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>N · Multimodal
+    <span class="subtitle">VLM encoder-input scheduling, encoder-output cache, ViT full CUDA graphs, VLM prefix caching.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/multimodal/</code> + <code>vllm/v1/core/encoder_cache_manager.py</code> +
+       <code>vllm/v1/core/sched/scheduler.py::_try_schedule_encoder_inputs</code> (line 1103) +
+       <code>vllm/v1/worker/gpu/mm/</code> (MRV2) + <code>vllm/v1/worker/encoder_cudagraph.py</code>.</p>
+    <p>Recent: ViT full CUDA graphs (PR #35963), VLM prefix caching (PR #11187), encoder-cache memory consumption (PR #25903).</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: med-high</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Encoder-input scheduling (cross-link to scheduler) <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L1103" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py :: _try_schedule_encoder_inputs (line 1103)</a></div>
+    <p>Encoder-cache packing problem for VLMs. See <a href="B_scheduler.html">module B</a>.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>encoder_cache_manager — eviction <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/encoder_cache_manager.py" target="_blank" rel="noreferrer">vllm/v1/core/encoder_cache_manager.py</a></div>
+    <p>Cache eviction policy for encoder outputs (image embeddings).</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Eviction priority — recency vs. shared count vs. encoder-cost.</dd>
+      <dt>Metric</dt><dd>Encoder-cache hit rate, end-to-end VLM throughput.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>ViT CUDA-graph capture set <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/encoder_cudagraph.py" target="_blank" rel="noreferrer">vllm/v1/worker/encoder_cudagraph.py</a></div>
+    <p>Image-tile shape histogram → capture-size schedule. Co-evolve with module J.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Liu et al. — LLaVA.</span> <span class="paper-meta">NeurIPS 2023.</span></li>
+    <li><span class="paper-title">Bai et al. — Qwen2-VL.</span> <span class="paper-meta">2024.</span></li>
+    <li><span class="paper-title">vLLM PR #11187 — Prefix caching for VLMs.</span></li>
+    <li><span class="paper-title">vLLM PR #25903 — Encoder-cache memory consumption fix.</span></li>
+    <li><span class="paper-title">Cha et al. — Honeybee: Locality-enhanced Projector.</span> <span class="paper-meta">CVPR 2024.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="M_lora.html">
+      <span class="nav-label">← Prev · M</span>
+      <span class="nav-title">LoRA</span>
+    </a>
+    <a class="next" href="O_pooling_embedding.html">
+      <span class="nav-label">Next · O →</span>
+      <span class="nav-title">Pooling / Embedding</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

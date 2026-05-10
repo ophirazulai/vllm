@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C · V1 KV-Cache Manager · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/core" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>C · V1 KV-Cache Manager
+    <span class="subtitle">Block-paged KV memory, automatic prefix caching, LRU eviction, hybrid memory allocator.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/core/</code><br>
+       <strong>Key files (verified):</strong> <code>kv_cache_manager.py</code> (<code>KVCacheManager</code>, 541 LoC), <code>kv_cache_utils.py</code>
+       (block hashing, <code>PrefixCacheStats</code>), <code>kv_cache_coordinator.py</code> (<code>get_kv_cache_coordinator</code>),
+       <code>block_pool.py</code> (<code>KVCacheBlock</code> allocator, 509 LoC; doubly-linked free-queue, cached_block hash table),
+       <code>encoder_cache_manager.py</code>, <code>kv_cache_metrics.py</code>, <code>single_type_kv_cache_manager.py</code>.<br>
+       <strong>Top-level interface:</strong> <code>vllm/v1/kv_cache_interface.py</code>
+       (<code>KVCacheConfig</code>, <code>AttentionSpec</code>, <code>KVCacheGroup</code>).</p>
+    <p>Methods of interest: <code>KVCacheManager.{get_computed_blocks, allocate_slots, free, get_num_common_prefix_blocks,
+       evict_blocks, take_events, reset_prefix_cache}</code>.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> <span class="pill pill-rank">target #3</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Block-hash strategy <span class="pill pill-risk-high">risk: medium-high</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_utils.py" target="_blank" rel="noreferrer">vllm/v1/core/kv_cache_utils.py</a></div>
+    <p>Block-hash function chain (<code>sha256</code> vs Python <code>hash</code>, mixing of multimodal extra keys, parent-hash
+       chaining order). The <code>caching_hash_fn</code> choice in <code>KVCacheManager.__init__</code> is already a knob.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Hash function selection + parent-hash chaining order + multimodal-key mixing.</dd>
+      <dt>Evaluator</dt><dd>Synthetic workload mixing system prompts, few-shot prefixes, and multi-turn chats with controllable hit rates (0%, 30%, 70%, 95%).</dd>
+      <dt>Metric</dt><dd>Maximize <code>cache_hit_rate × throughput</code>, subject to "no false positives" — block-hash collisions must produce identical token sequences.</dd>
+      <dt>Correctness oracle</dt><dd>Collision tests on a 1B-token corpus.</dd>
+      <dt>Risk</dt><dd>Medium-high — correctness bugs corrupt outputs.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>KVCacheManager.allocate_slots <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noreferrer">vllm/v1/core/kv_cache_manager.py</a></div>
+    <p>KV-block allocation with lookahead.</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>OOM / preempt rate.</dd>
+      <dt>Why evolve</dt><dd>Block-fit heuristic — current rule is greedy.</dd>
+      <dt>Evaluator</dt><dd>KV-cache stress test.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>get_computed_blocks · get_num_common_prefix_blocks <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_manager.py" target="_blank" rel="noreferrer">vllm/v1/core/kv_cache_manager.py</a></div>
+    <p>Prefix-cache lookup + cascade-attention enabling. Hot per-step.</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>Cache hit rate, throughput.</dd>
+      <dt>Evaluator</dt><dd>Synthetic shared-prefix workload.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>block_pool — LRU eviction &amp; free-queue policy <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/block_pool.py" target="_blank" rel="noreferrer">vllm/v1/core/block_pool.py</a></div>
+    <p>Block reclamation policy — replaceable with LFU, Belady-approx, or learned cost.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Eviction priority function over (recency, frequency, prefix-share count, parent-chain depth).</dd>
+      <dt>Metric</dt><dd>Hit rate at low budget.</dd>
+    </dl>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Kwon et al. — PagedAttention / vLLM.</span> <span class="paper-meta">SOSP 2023.</span> <span class="paper-direction">Foundational.</span></li>
+    <li><span class="paper-title">Zheng et al. — SGLang / RadixAttention.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2312.07104</span> <span class="paper-direction">Evolve radix-tree eviction priorities.</span></li>
+    <li><span class="paper-title">Juravsky et al. — Hydragen: High-Throughput LLM Inference with Shared Prefixes.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.05099</span></li>
+    <li><span class="paper-title">Brandon et al. — Cascade Inference / Cascade Attention.</span> <span class="paper-meta">FlashInfer paper, MLSys 2025.</span></li>
+    <li><span class="paper-title">Ye et al. — FlashInfer.</span> <span class="paper-meta">MLSys 2025 (best paper).</span> <span class="paper-id">arXiv:2501.01005</span> <span class="paper-direction">Cascade and block-sparse formats.</span></li>
+    <li><span class="paper-title">Sheng et al. — ChunkAttention.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.15220</span></li>
+    <li><span class="paper-title">Prabhu et al. — vAttention: Dynamic Memory Management without PagedAttention.</span> <span class="paper-meta">ASPLOS 2025.</span> <span class="paper-id">arXiv:2405.04437</span> <span class="paper-direction">Evolve block-vs-virtual-memory hybrid heuristics.</span></li>
+    <li><span class="paper-title">Zhang et al. — H₂O: Heavy-Hitter Oracle for Efficient Generative Inference.</span> <span class="paper-meta">NeurIPS 2023.</span> <span class="paper-direction">Eviction policy.</span></li>
+    <li><span class="paper-title">Xiao et al. — Efficient Streaming LMs with Attention Sinks (StreamingLLM).</span> <span class="paper-meta">ICLR 2024.</span> <span class="paper-id">arXiv:2309.17453</span></li>
+    <li><span class="paper-title">Li et al. — SnapKV.</span> <span class="paper-meta">NeurIPS 2024.</span> <span class="paper-id">arXiv:2404.14469</span></li>
+    <li><span class="paper-title">Liu et al. — Scissorhands.</span> <span class="paper-meta">NeurIPS 2023.</span></li>
+    <li><span class="paper-title">Ge et al. — FastGen: Adaptive KV Compression.</span> <span class="paper-meta">ICLR 2024.</span> <span class="paper-id">arXiv:2310.01801</span></li>
+    <li><span class="paper-title">Hooper et al. — KVQuant: Towards 10M Context Length KV Quantization.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.18079</span></li>
+    <li><span class="paper-title">Liu et al. — KIVI: 2-bit KV Quantization.</span> <span class="paper-meta">ICML 2024.</span> <span class="paper-id">arXiv:2402.02750</span></li>
+    <li><span class="paper-title">Zhang / Cai et al. — PyramidKV / PyramidInfer.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2406.02069 / 2405.12532</span> <span class="paper-direction">Per-layer eviction budgets.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="B_scheduler.html">
+      <span class="nav-label">← Prev · B</span>
+      <span class="nav-title">V1 Scheduler</span>
+    </a>
+    <a class="next" href="D_worker_model_runner.html">
+      <span class="nav-label">Next · D →</span>
+      <span class="nav-title">V1 Worker / Model Runner</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

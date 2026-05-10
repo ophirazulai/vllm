@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P · Cascade Attention · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flashinfer.py" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>P · Cascade Attention
+    <span class="subtitle">Implementation inside attention backends; driven by Scheduler.get_num_common_prefix_blocks().</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Implementation:</strong> Inside attention backends — <code>flash_attn.py:741–767</code>,
+       <code>flashinfer.py:1148–1198</code>; driven by <code>Scheduler.get_num_common_prefix_blocks()</code>.</p>
+    <p>Cascade attention only fires when a shared prefix is large; it merges the prefix-attention reduction
+       across sibling requests, saving redundant work proportional to (N_siblings − 1) × prefix_len.</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: medium</span> — only fires when shared prefix is large.</p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Cascade-vs-flat decision threshold <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flashinfer.py#L1148" target="_blank" rel="noreferrer">vllm/v1/attention/backends/flashinfer.py (lines 1148–1198)</a></div>
+    <p>The shared-prefix length threshold below which cascade attention is bypassed. Currently a static cutoff;
+       optimal cutoff depends on per-request prefix length distribution and head-size.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Cutoff function over (num_siblings, common_prefix_len, head_dim, batch_size).</dd>
+      <dt>Evaluator</dt><dd>Long-context shared-prefix benchmark.</dd>
+      <dt>Metric</dt><dd>Kernel ms; reject any candidate with element-wise mismatch &gt; tol.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Cascade attention in FlashAttention path <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/flash_attn.py#L741" target="_blank" rel="noreferrer">vllm/v1/attention/backends/flash_attn.py (lines 741–767)</a></div>
+    <p>Same logic, FA path. Co-evolve with FlashInfer cutoff.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Brandon et al. — Cascade Inference / Cascade Attention.</span> <span class="paper-meta">FlashInfer paper.</span></li>
+    <li><span class="paper-title">Ye et al. — FlashInfer.</span> <span class="paper-meta">MLSys 2025.</span> <span class="paper-id">arXiv:2501.01005</span></li>
+    <li><span class="paper-title">Juravsky et al. — Hydragen: High-Throughput LLM Inference with Shared Prefixes.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.05099</span></li>
+    <li><span class="paper-title">Sheng et al. — ChunkAttention.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2402.15220</span></li>
+    <li><span class="paper-title">Zheng et al. — SGLang / RadixAttention.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2312.07104</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="O_pooling_embedding.html">
+      <span class="nav-label">← Prev · O</span>
+      <span class="nav-title">Pooling / Embedding</span>
+    </a>
+    <a class="next" href="Q_custom_ops.html">
+      <span class="nav-label">Next · Q →</span>
+      <span class="nav-title">Custom Triton/CUDA Ops</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

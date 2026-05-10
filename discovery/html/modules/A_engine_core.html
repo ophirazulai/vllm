@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A · V1 Engine Core · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/engine" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>A · V1 Engine Core
+    <span class="subtitle">EngineCore busy loop, async LLM façade, data-parallel coordinator, ZMQ transport.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/engine/</code><br>
+       <strong>Key files (verified):</strong> <code>core.py</code> (EngineCore busy loop, request handshake, KV-cache config, ZMQ addresses),
+       <code>async_llm.py</code> (AsyncLLM façade), <code>coordinator.py</code> (data-parallel coordinator),
+       <code>core_client.py</code>, <code>llm_engine.py</code>, <code>input_processor.py</code>, <code>detokenizer.py</code>,
+       <code>output_processor.py</code>, <code>logprobs.py</code>, <code>parallel_sampling.py</code>,
+       <code>tensor_ipc.py</code>, <code>exceptions.py</code>, <code>utils.py</code>
+       (<code>EngineHandshakeMetadata</code>, <code>EngineZmqAddresses</code>, <code>get_device_indices</code>).</p>
+    <p>Owns the scheduler + executor; drives one tick = <code>schedule()</code> → <code>execute_model()</code> →
+       <code>update_from_output()</code>. One engine-core process per data-parallel rank.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> — single-threaded busy loop;
+       CPU overhead here is the V1 design's critical path.</p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+  <p class="section-intro">No top-10 targets land here directly — the engine core is mostly orchestration glue —
+     but several lower-ROI cleanups are evolvable.</p>
+
+  <div class="evolve-loc">
+    <h3>EngineCore busy-loop pacing <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/core.py" target="_blank" rel="noreferrer">vllm/v1/engine/core.py</a></div>
+    <p>The choice of when to call <code>schedule()</code> vs. yielding to the ZMQ socket. Currently a tight loop;
+       under low load this can over-poll.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Loop pacing function (sleep/poll heuristic) as a function of recent step latency, queue depth, and request arrival rate.</dd>
+      <dt>Metric</dt><dd>Idle CPU%, TTFT under burst arrivals.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>parallel_sampling — fan-out batching <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/parallel_sampling.py" target="_blank" rel="noreferrer">vllm/v1/engine/parallel_sampling.py</a></div>
+    <p>How <code>n &gt; 1</code> requests get fanned out into the batch. Fan-out timing affects KV-cache reuse.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>coordinator — DP rebalancing <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/engine/coordinator.py" target="_blank" rel="noreferrer">vllm/v1/engine/coordinator.py</a></div>
+    <p>Data-parallel rank assignment under skewed loads.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <p>This module is mostly orchestration; it inherits its scheduling literature from
+     <a href="B_scheduler.html">module B</a> and its distributed literature from
+     <a href="I_distributed_kv_connector.html">module I</a>. The single most directly applicable reference:</p>
+  <ol class="paper-list">
+    <li><span class="paper-title">Yu et al. — Orca: A Distributed Serving System for Transformer-Based Generative Models.</span> <span class="paper-meta">OSDI 2022.</span> <span class="paper-direction">Iteration-level scheduling baseline that the EngineCore loop inherits.</span></li>
+    <li><span class="paper-title">Kwon et al. — PagedAttention / vLLM.</span> <span class="paper-meta">SOSP 2023.</span> <span class="paper-id">arXiv:2309.06180</span></li>
+    <li><span class="paper-title">Novikov et al. — AlphaEvolve.</span> <span class="paper-meta">DeepMind 2025.</span> <span class="paper-id">arXiv:2506.13131</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <span class="nav-empty"></span>
+    <a class="next" href="B_scheduler.html">
+      <span class="nav-label">Next · B →</span>
+      <span class="nav-title">V1 Scheduler</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

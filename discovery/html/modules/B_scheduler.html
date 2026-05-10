@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B · V1 Scheduler · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/core/sched" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>B · V1 Scheduler
+    <span class="subtitle">Per-step token-budget allocation, chunked prefill, preemption, encoder-input scheduling.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/core/sched/</code><br>
+       <strong>Key files (verified):</strong> <code>scheduler.py</code> (2,295 LoC), <code>async_scheduler.py</code>,
+       <code>interface.py</code> (<code>SchedulerInterface</code>, <code>PauseState</code>),
+       <code>output.py</code> (<code>SchedulerOutput</code>, <code>NewRequestData</code>, <code>CachedRequestData</code>, <code>GrammarOutput</code>),
+       <code>request_queue.py</code> (<code>RequestQueue</code>, <code>SchedulingPolicy</code>, <code>create_request_queue</code>),
+       <code>utils.py</code> (<code>check_stop</code>, <code>remove_all</code>).</p>
+    <p>Owns per-step token-budget allocation across running + waiting requests; handles chunked prefill, preemption
+       (PRIORITY-policy <code>max((priority, arrival_time))</code> victim selection or LIFO under FCFS), encoder-input scheduling
+       for VLMs, spec-decode token alignment, KV-connector hooks (P/D disaggregation, EC connector), and structured-output flag propagation.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span>
+       <span class="pill pill-rank">target #2</span>
+       <span class="pill pill-rank">target #10</span>
+    </p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+  <p class="section-intro">Six high-value evolve locations inside this module, ordered by ROI.</p>
+
+  <div class="evolve-loc">
+    <h3>Scheduler.schedule — main per-step admission &amp; budgeting <span class="pill pill-risk-high">risk: high</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L352" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py :: Scheduler.schedule (line 352)</a></div>
+    <p>The heuristic that selects which waiting request to admit next, the chunked-prefill chunk-sizing rule
+       (<code>long_prefill_token_threshold</code> interaction with <code>token_budget</code>), the preemption victim selection,
+       and the <code>skipped_waiting</code> re-queue logic (linked in issue #27441).</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt>
+      <dd>A small Python policy function with restricted API access — only <code>Request.priority</code>, <code>arrival_time</code>,
+          <code>num_prompt_tokens</code>, <code>num_computed_tokens</code>, queue lengths, and <code>kv_cache_utilization</code> exposed.</dd>
+      <dt>Evaluator</dt>
+      <dd><code>benchmarks/benchmark_serving.py</code> driving <code>vllm serve</code> against ShareGPT, Mooncake-Conversation,
+          BurstGPT, and a synthetic mixed-prefill-decode trace.</dd>
+      <dt>Metric</dt>
+      <dd>TTFT p99, TPOT p99, completed-request goodput under SLO.</dd>
+      <dt>Fitness</dt>
+      <dd>Weighted sum of (TTFT p99 violation rate, TPOT p99 violation rate, throughput).</dd>
+      <dt>Expected gain</dt>
+      <dd>Sarathi-Serve and Llumnix suggest 1.5–3× goodput from better scheduling; AlphaEvolve specifically reports a
+          discovered datacenter scheduler that recovered 0.7% of Google's compute.</dd>
+      <dt>Safety</dt>
+      <dd>Must run a fairness regression harness (cf. VTC, Locality-aware Fair Scheduling) — easy to overfit to throughput at the cost of starvation.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>_select_waiting_queue_for_scheduling — picks waiting vs skipped_waiting <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L1567" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py (line 1567)</a></div>
+    <p>Currently FIFO with the prepend bug discussed in issue #27441. A natural FunSearch-shaped target: tiny function,
+       scalar reward (tail latency), bounded API.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>The selection rule between primary <code>waiting</code> queue and the <code>skipped_waiting</code> retry queue.</dd>
+      <dt>Metric</dt><dd>Tail latency, starvation count.</dd>
+      <dt>Risk</dt><dd>Medium — bugs can starve requests indefinitely.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>_preempt_request — preemption victim selection <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L952" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py (line 952)</a></div>
+    <p>Currently <code>max(running, key=(priority, arrival_time))</code> under PRIORITY policy, LIFO under FCFS.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Replace with a learned cost: <code>cost(req) = f(remaining_tokens, priority, num_blocks_held, partial_completion)</code>.</dd>
+      <dt>Evaluator</dt><dd>Custom mixed-priority benchmark.</dd>
+      <dt>Metric</dt><dd>Preemption count, fairness, completed-request goodput.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>_try_schedule_encoder_inputs — VLM encoder-input scheduling <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L1103" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py (line 1103)</a></div>
+    <p>Encoder-cache packing problem for VLMs (Qwen2-VL, LLaVA, etc.). Linked in issue #25903.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Packing rule for encoder budget: how many encoder requests to schedule given current cache utilization.</dd>
+      <dt>Evaluator</dt><dd><code>mmmu_bench.py</code> (in tree).</dd>
+      <dt>Metric</dt><dd>VLM throughput, encoder-cache hit rate.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>_mamba_block_aligned_split — chunked-prefill for Mamba/hybrid <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py#L302" target="_blank" rel="noreferrer">vllm/v1/core/sched/scheduler.py (line 302)</a></div>
+    <p>Block-alignment policy for Mamba/hybrid models — currently a hand-coded snap-to-block rule. With more SSMs entering V1
+       (Qwen3-Next, Jamba), evolved rules can balance cache hit rate against unnecessarily small chunks.</p>
+    <dl class="kv-grid">
+      <dt>Evaluator</dt><dd>Serving benchmark on a hybrid model with mixed prefill/decode loads.</dd>
+      <dt>Metric</dt><dd>Throughput at fixed TTFT SLO.</dd>
+      <dt>Risk</dt><dd>Medium — correctness edge cases around state checkpointing.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>request_queue.py — datastructure choice <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/request_queue.py" target="_blank" rel="noreferrer">vllm/v1/core/sched/request_queue.py</a></div>
+    <p><code>SchedulingPolicy</code>, <code>create_request_queue</code>: small surface, but affects every step.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Insertion / peek / pop cost — heap vs deque vs sorted-list trade-offs.</dd>
+      <dt>Evaluator</dt><dd>Microbenchmark.</dd>
+    </dl>
+  </div>
+
+  <h2>Related Literature</h2>
+  <p class="section-intro">Continuous batching, chunked prefill, fairness, and disaggregated serving — plus the methodology layer.</p>
+
+  <ol class="paper-list">
+    <li><span class="paper-title">Yu et al. — Orca: A Distributed Serving System for Transformer-Based Generative Models.</span>
+      <span class="paper-meta">OSDI 2022.</span> <span class="paper-direction">Iteration-level scheduling baseline. Any evolved policy must remain iteration-level.</span></li>
+    <li><span class="paper-title">Kwon et al. — Efficient Memory Management for LLM Serving with PagedAttention.</span>
+      <span class="paper-meta">SOSP 2023.</span><span class="paper-id">arXiv:2309.06180</span>
+      <span class="paper-direction">Establishes the V0/V1 batching contract.</span></li>
+    <li><span class="paper-title">Agrawal et al. — Sarathi-Serve: Taming Throughput-Latency Tradeoff.</span>
+      <span class="paper-meta">OSDI 2024.</span><span class="paper-id">arXiv:2403.02310</span>
+      <span class="paper-direction">Chunked prefill + stall-free schedules. Evolve chunk size / mixing ratio.</span></li>
+    <li><span class="paper-title">Sun et al. — Llumnix: Dynamic Scheduling for LLM Serving.</span>
+      <span class="paper-meta">OSDI 2024.</span><span class="paper-id">arXiv:2406.03243</span>
+      <span class="paper-direction">Live request migration. Cross-instance migration policy.</span></li>
+    <li><span class="paper-title">Wu et al. — FastServe: Fast Distributed Inference Serving.</span>
+      <span class="paper-meta">arXiv 2023.</span><span class="paper-id">arXiv:2305.05920</span>
+      <span class="paper-direction">MLFQ scheduler precedent.</span></li>
+    <li><span class="paper-title">Sheng et al. — Fairness in Serving Large Language Models (VTC).</span>
+      <span class="paper-meta">OSDI 2024.</span><span class="paper-id">arXiv:2401.00588</span>
+      <span class="paper-direction">Fairness-aware admission — required regression harness for any evolved policy.</span></li>
+    <li><span class="paper-title">Cao et al. — Locality-aware Fair Scheduling in LLM Serving (DLPM/D²LPM).</span>
+      <span class="paper-meta">2025.</span><span class="paper-id">arXiv:2501.14312</span></li>
+    <li><span class="paper-title">Zhong et al. — DistServe: Disaggregating Prefill and Decoding.</span>
+      <span class="paper-meta">OSDI 2024.</span><span class="paper-id">arXiv:2401.09670</span>
+      <span class="paper-direction">P/D disaggregation goodput.</span></li>
+    <li><span class="paper-title">Patel et al. — Splitwise: Efficient Generative LLM Inference Using Phase Splitting.</span>
+      <span class="paper-meta">ISCA 2024.</span><span class="paper-id">arXiv:2311.18677</span></li>
+    <li><span class="paper-title">Qin et al. — Mooncake: A KVCache-Centric Disaggregated Architecture.</span>
+      <span class="paper-meta">FAST 2025.</span>
+      <span class="paper-direction">KV pool &amp; cache-aware routing.</span></li>
+    <li><span class="paper-title">Hu et al. — MemServe.</span>
+      <span class="paper-meta">2024.</span><span class="paper-id">arXiv:2401.11181</span>
+      <span class="paper-direction">Co-located / disaggregated scheduling.</span></li>
+    <li><span class="paper-title">Novikov et al. — AlphaEvolve.</span>
+      <span class="paper-meta">DeepMind 2025.</span><span class="paper-id">arXiv:2506.13131</span>
+      <span class="paper-direction"><strong>Direct precedent</strong> — reports an evolved datacenter scheduler that recovered 0.7% of Google compute.</span></li>
+    <li><span class="paper-title">Romera-Paredes et al. — FunSearch / Mathematical Discoveries.</span>
+      <span class="paper-meta">Nature 625, 2024.</span><span class="paper-id">doi:10.1038/s41586-023-06924-6</span>
+      <span class="paper-direction">Bin-packing heuristics evolved by FunSearch are the same shape as queue-admission policies.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="A_engine_core.html">
+      <span class="nav-label">← Prev · A</span>
+      <span class="nav-title">V1 Engine Core</span>
+    </a>
+    <a class="next" href="C_kv_cache_manager.html">
+      <span class="nav-label">Next · C →</span>
+      <span class="nav-title">V1 KV-Cache Manager</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

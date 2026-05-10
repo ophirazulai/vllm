@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M · LoRA · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/lora" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>M · LoRA (multi-LoRA)
+    <span class="subtitle">S-LoRA / Punica SGMV-style multi-tenant adapters, fused MoE-LoRA paths.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/lora/</code> (shared) plus <code>LoRAModelRunnerMixin</code> in <code>vllm/v1/worker/lora_model_runner_mixin.py</code>
+       and <code>vllm/v1/worker/gpu/lora_utils.py</code> (MRV2).</p>
+    <p>Recent: PR #13096 improving V1 LoRA performance; recent unpermute-aware fused MoE-LoRA path (#32655),
+       reduced kernel overhead via multiple CUDA graphs (#32005).</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: medium</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>LoRA dispatch in scheduler <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/lora_model_runner_mixin.py" target="_blank" rel="noreferrer">vllm/v1/worker/lora_model_runner_mixin.py</a></div>
+    <p>Adapter-set selection per step + LoRA bank cache eviction.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Co-locating requests by LoRA adapter to maximize SGMV cache reuse.</dd>
+      <dt>Metric</dt><dd>Throughput at fixed adapter-cache budget.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>SGMV kernel parameters <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/lora" target="_blank" rel="noreferrer">vllm/lora/</a></div>
+    <p>SGMV (Selective Grouped Matrix-Vector) — a Triton kernel with autotunable block sizes.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Hu et al. — LoRA: Low-Rank Adaptation of Large Language Models.</span> <span class="paper-meta">ICLR 2022.</span> <span class="paper-id">arXiv:2106.09685</span></li>
+    <li><span class="paper-title">Sheng et al. — S-LoRA: Serving Thousands of Concurrent LoRA Adapters.</span> <span class="paper-meta">MLSys 2024.</span> <span class="paper-id">arXiv:2311.03285</span></li>
+    <li><span class="paper-title">Chen, Ye et al. — Punica: Multi-Tenant LoRA Serving.</span> <span class="paper-meta">MLSys 2024.</span> <span class="paper-id">arXiv:2310.18547</span> <span class="paper-direction">SGMV kernel.</span></li>
+    <li><span class="paper-title">Wu et al. — dLoRA.</span> <span class="paper-meta">OSDI 2024.</span></li>
+    <li><span class="paper-title">CaraServe: CPU-Assisted LoRA Serving.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.11240</span></li>
+    <li><span class="paper-title">Sheng et al. — PEFT-Aware Scheduling.</span> <span class="paper-meta">2024.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="L_moe.html">
+      <span class="nav-label">← Prev · L</span>
+      <span class="nav-title">MoE Stack</span>
+    </a>
+    <a class="next" href="N_multimodal.html">
+      <span class="nav-label">Next · N →</span>
+      <span class="nav-title">Multimodal</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

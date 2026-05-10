@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F · V1 Sampling · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/sample" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>F · V1 Sampling
+    <span class="subtitle">Temperature, top-k, top-p, min-p, FlashInfer fast sampling, rejection-sampler kernel.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/sample/</code><br>
+       <strong>Key files (verified):</strong> <code>sampler.py</code> (<code>Sampler</code> nn.Module),
+       <code>rejection_sampler.py</code> (Triton <code>rejection_greedy_sample_kernel</code>, <code>expand_kernel</code>,
+       <code>apply_sampling_constraints</code>; 921 LoC), <code>metadata.py</code> (<code>SamplingMetadata</code>),
+       <code>thinking_budget_state.py</code>; <code>ops/topk_topp_sampler.py</code> (<code>TopKTopPSampler</code>,
+       <code>flashinfer_sample</code>, <code>random_sample</code>, <code>forward_cuda</code>, <code>apply_top_k_only</code>; 410 LoC),
+       <code>ops/topk_topp_triton.py</code>, <code>ops/penalties.py</code>, <code>ops/bad_words.py</code>, <code>ops/logprobs.py</code>;
+       <code>logits_processor/</code> directory.</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: med-high</span>
+       <span class="pill pill-rank">target #5</span> <span class="pill pill-rank">target #6</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>topk_topp_sampler.forward_cuda + apply_top_k_only <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/sample/ops/topk_topp_sampler.py" target="_blank" rel="noreferrer">vllm/v1/sample/ops/topk_topp_sampler.py</a></div>
+    <p>Replacement of the <code>forward_cuda</code> top-k/top-p path (currently mixes sort, FlashInfer rejection-sampling, and a reduce).
+       FlashInfer's "sorting-free GPU sampling" blog (March 2025) shows real headroom; <code>apply_top_k_only</code> already explicitly
+       avoids full-vocab sort.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Triton kernel(s) for fused top-k / top-p / min-p + softmax + sample.</dd>
+      <dt>Evaluator</dt><dd>Microbenchmark over (vocab_size ∈ {32k, 128k, 256k}, batch_size ∈ {1, 8, 64, 256}, k ∈ {1, 50, 1024}).</dd>
+      <dt>Correctness</dt><dd>Kolmogorov-Smirnov test against a reference PyTorch sort+sample on 100k samples per config.</dd>
+      <dt>Fitness</dt><dd>Minimize per-token sample latency; reject any candidate failing K-S at p&lt;0.01.</dd>
+      <dt>Risk</dt><dd>Low — kernel is functionally isolated and has a strong correctness oracle.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>rejection_sampler — Triton kernels <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/sample/rejection_sampler.py" target="_blank" rel="noreferrer">vllm/v1/sample/rejection_sampler.py</a></div>
+    <p><code>rejection_greedy_sample_kernel</code>, <code>expand_kernel</code>, <code>apply_sampling_constraints</code>.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Kernel block sizes, <code>MAX_NUM_TOKENS</code> unrolling, <code>apply_sampling_constraints</code> fused-vs-split strategy.</dd>
+      <dt>Evaluator</dt><dd>Spec-decode microbench measuring sampler-only ms; correctness against the existing PyTorch fallback.</dd>
+      <dt>Metric</dt><dd>ms/draft-token at fixed acceptance rate.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>logits_processor — penalty &amp; bad-words ops <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/sample/ops" target="_blank" rel="noreferrer">vllm/v1/sample/ops/penalties.py · bad_words.py · logprobs.py</a></div>
+    <p>Repetition / frequency / presence penalties, bad-words masking, logprobs gathering — each is a small Triton-eligible op.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Fused vs split penalty application; sparse-mask Triton kernel for bad words.</dd>
+      <dt>Evaluator</dt><dd>Microbench at varying penalty-density.</dd>
+    </dl>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Holtzman et al. — The Curious Case of Neural Text Degeneration (top-p / nucleus).</span> <span class="paper-meta">ICLR 2020.</span> <span class="paper-id">arXiv:1904.09751</span></li>
+    <li><span class="paper-title">Fan et al. — Hierarchical Neural Story Generation (top-k).</span> <span class="paper-meta">ACL 2018.</span></li>
+    <li><span class="paper-title">Minh et al. — min-p Sampling: Balancing Creativity and Coherence.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2407.01082</span></li>
+    <li><span class="paper-title">Ye et al. — FlashInfer (sorting-free sampling).</span> <span class="paper-meta">MLSys 2025 + 2025-03-10 blog.</span> <span class="paper-id">arXiv:2501.01005</span></li>
+    <li><span class="paper-title">Tillet, Kung, Cox — Triton: An Intermediate Language and Compiler for Tiled Neural-Network Computations.</span> <span class="paper-meta">MAPL 2019.</span></li>
+    <li><span class="paper-title">Ouyang, Guo et al. — KernelBench: Can LLMs Write Efficient GPU Kernels?</span> <span class="paper-meta">ICML 2025.</span> <span class="paper-id">arXiv:2502.10517</span> <span class="paper-direction">Standard evaluation harness.</span></li>
+    <li><span class="paper-title">Lange et al. — AI CUDA Engineer / robust-kbench.</span> <span class="paper-meta">Sakana AI 2025.</span> <span class="paper-direction">Sample-eval pitfalls; required benchmark hardening.</span></li>
+    <li><span class="paper-title">Baronio et al. — Kevin: Multi-Turn RL for Generating CUDA Kernels.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2507.11948</span></li>
+    <li><span class="paper-title">Li et al. — CUDA-L1 / CUDA-L2.</span> <span class="paper-meta">ICLR 2026 / 2025.</span> <span class="paper-id">arXiv:2507.14111 / 2512.02551</span></li>
+    <li><span class="paper-title">Andrews &amp; Witteveen — GPU Kernel Scientist.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2506.20807</span></li>
+    <li><span class="paper-title">EvoEngineer.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2510.03760</span></li>
+    <li><span class="paper-title">Kernel-Smith.</span> <span class="paper-meta">2026.</span> <span class="paper-id">arXiv:2603.28342</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="E_attention_backends.html">
+      <span class="nav-label">← Prev · E</span>
+      <span class="nav-title">V1 Attention Backends</span>
+    </a>
+    <a class="next" href="G_speculative_decoding.html">
+      <span class="nav-label">Next · G →</span>
+      <span class="nav-title">V1 Speculative Decoding</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>O · Pooling / Embedding · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/pool" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>O · Pooling / Embedding (V1)
+    <span class="subtitle">Hidden-states processor, partial V1 support; pooling models gained MRV2 support (#35120).</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/pool/</code> + <code>vllm/v1/worker/gpu/pool/</code> (MRV2).</p>
+    <p>V1 support is partial; per release notes pooling models gained MRV2 support (#35120). Still tracked under
+       RFC #12249 ("hidden states processor") and #13360.</p>
+    <p class="anchor"><span class="pill pill-crit-medium">criticality: medium</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+  <p class="section-intro">
+    Limited evolve surface today. Recommend revisiting once RFC #12249 lands and the hidden-states processor stabilizes.
+  </p>
+
+  <div class="evolve-loc">
+    <h3>Pooling kernel choice <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/pool" target="_blank" rel="noreferrer">vllm/v1/pool/</a></div>
+    <p>Mean / max / CLS / last-token pooling — fused vs. separate kernel selection per shape.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <p>This area is mostly application-specific — embedding-model literature is broad. The actively useful pointer:</p>
+  <ol class="paper-list">
+    <li><span class="paper-title">Wang et al. — Massive Text Embedding Benchmark (MTEB).</span> <span class="paper-meta">EACL 2023.</span></li>
+    <li><span class="paper-title">Reimers &amp; Gurevych — Sentence-BERT.</span> <span class="paper-meta">EMNLP 2019.</span></li>
+    <li><span class="paper-title">vLLM RFC #12249 — Hidden-states processor.</span></li>
+    <li><span class="paper-title">vLLM RFC #13360 — Pooling V1 plan.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="N_multimodal.html">
+      <span class="nav-label">← Prev · N</span>
+      <span class="nav-title">Multimodal</span>
+    </a>
+    <a class="next" href="P_cascade_attention.html">
+      <span class="nav-label">Next · P →</span>
+      <span class="nav-title">Cascade Attention</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

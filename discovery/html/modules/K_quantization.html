@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K · Quantization · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/quantization" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>K · Quantization
+    <span class="subtitle">FP8 (per-tensor / channel / token), INT8, AWQ, GPTQ, Marlin, Machete, MXFP4/MXFP8/NVFP4, GGUF, compressed-tensors, ModelOpt, TorchAO.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/model_executor/layers/quantization/</code> (V1-shared with V0).<br>
+       <strong>Key files (verified):</strong> <code>fp8.py</code>, <code>gptq_marlin.py</code>, <code>awq_marlin.py</code>, <code>machete.py</code>,
+       <code>compressed_tensors/*</code>; plus C++/CUDA in <code>csrc/quantization/</code> (Marlin templates, Machete CuTe).</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> <span class="pill pill-rank">target #9</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Quantized GEMM auto-selection (Marlin / Machete / cuBLAS-FP8) <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/quantization/utils" target="_blank" rel="noreferrer">vllm/model_executor/layers/quantization/utils/marlin_utils*.py</a></div>
+    <p>The decision tree that maps <code>(M, K, N, group_size, bit-width, dtype)</code> → kernel implementation.
+       The Machete PR (#7174) explicitly notes <em>"Improve heuristic namely for 4096×4096"</em> and <em>"Improve batch size &lt;32 performance"</em> as open work.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Decision tree / lookup table over shape buckets.</dd>
+      <dt>Evaluator</dt><dd><code>benchmarks/kernels/benchmark_machete.py</code>, <code>benchmark_marlin.py</code> — already in repo.</dd>
+      <dt>Metric</dt><dd>Per-shape ms; constrained correctness vs FP16 reference within bit-width-appropriate tolerance.</dd>
+      <dt>Risk</dt><dd>Low — decision logic is isolated and reversible.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Machete CuTe tile-size templates <span class="pill pill-risk-high">risk: medium-high</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/csrc/quantization/machete" target="_blank" rel="noreferrer">csrc/quantization/machete/</a></div>
+    <p>Tile-size templates (C++/CuTe).</p>
+    <dl class="kv-grid">
+      <dt>Risk</dt><dd>Medium-high — must rebuild C++ on each candidate (multiplies iteration cost ~10–100×). Prefer Python-side dispatch heuristics first.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>FP8 selection (per-tensor ↔ per-token ↔ block) <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/fp8.py" target="_blank" rel="noreferrer">vllm/model_executor/layers/quantization/fp8.py</a></div>
+    <p>Granularity selection has measurable accuracy/throughput trade-off.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Xiao et al. — SmoothQuant: Accurate and Efficient Post-Training Quantization for LLMs.</span> <span class="paper-meta">ICML 2023.</span> <span class="paper-id">arXiv:2211.10438</span></li>
+    <li><span class="paper-title">Lin et al. — AWQ: Activation-Aware Weight Quantization.</span> <span class="paper-meta">MLSys 2024.</span> <span class="paper-id">arXiv:2306.00978</span></li>
+    <li><span class="paper-title">Frantar et al. — GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers.</span> <span class="paper-meta">ICLR 2023.</span> <span class="paper-id">arXiv:2210.17323</span></li>
+    <li><span class="paper-title">Frantar &amp; Alistarh — Marlin: 4-bit Inference Kernel.</span> <span class="paper-meta">vLLM PR #6612, NeurIPS 2024 Efficient ML Workshop.</span></li>
+    <li><span class="paper-title">Wilkinson et al. — Machete: Hopper Optimized Mixed-Precision Linear Kernel.</span> <span class="paper-meta">vLLM PR #7174, 2024.</span></li>
+    <li><span class="paper-title">Lin et al. — QServe: W4A8KV4 Quantization.</span> <span class="paper-meta">MLSys 2025.</span> <span class="paper-id">arXiv:2405.04532</span></li>
+    <li><span class="paper-title">Zhao et al. — Atom: Low-bit Quantization for Efficient and Accurate LLM Serving.</span> <span class="paper-meta">MLSys 2024.</span> <span class="paper-id">arXiv:2310.19102</span></li>
+    <li><span class="paper-title">Liu et al. — KIVI: 2-bit KV Cache Quantization.</span> <span class="paper-meta">ICML 2024.</span></li>
+    <li><span class="paper-title">Hooper et al. — KVQuant.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2401.18079</span></li>
+    <li><span class="paper-title">NVIDIA — FP8 Formats for Deep Learning.</span> <span class="paper-meta">2022.</span> <span class="paper-id">arXiv:2209.05433</span></li>
+    <li><span class="paper-title">Rouhani et al. — Microscaling (MX) Data Formats.</span> <span class="paper-meta">OCP 2023.</span></li>
+    <li><span class="paper-title">QQQ: Quality Quattuor-Bit Quantization.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2406.09904</span></li>
+    <li><span class="paper-title">Dettmers et al. — LLM.int8().</span> <span class="paper-meta">NeurIPS 2022.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="J_compilation_cuda_graphs.html">
+      <span class="nav-label">← Prev · J</span>
+      <span class="nav-title">Compilation / CUDA Graphs</span>
+    </a>
+    <a class="next" href="L_moe.html">
+      <span class="nav-label">Next · L →</span>
+      <span class="nav-title">MoE Stack</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

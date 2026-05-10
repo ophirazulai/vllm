@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I · Distributed / KV+EC Connector · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/distributed" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>I · Distributed / KV-Connector / EC-Connector
+    <span class="subtitle">TP + PP + DP + DCP/PCP + EP, P/D disaggregation via NCCL/RDMA/NIXL+UCX.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/distributed/kv_transfer/kv_connector/v1/</code> (<code>KVConnectorBase_V1</code>, <code>SupportsHMA</code>, factory)
+       and <code>vllm/distributed/ec_transfer/ec_connector/</code> (Encoder Cache connector, factory).<br>
+       <strong>Executor:</strong> <code>vllm/v1/executor/multiproc_executor.py</code> (per-GPU <code>WorkerProc</code>),
+       <code>vllm/v1/executor/abstract.py</code>, <code>vllm/v1/executor/uniproc_executor.py</code>,
+       <code>vllm/v1/executor/ray_executor.py</code>, <code>vllm/v1/executor/ray_executor_v2.py</code>,
+       <code>ray_env_utils.py</code>, <code>ray_utils.py</code>.</p>
+    <p><strong>Responsibility:</strong> Tensor parallelism (Megatron-style), pipeline parallelism with Cache Intermediate Tensors (PR #13353),
+       data-parallel coordinator, decode-context-parallel (DCP), prefill-context-parallel (PCP),
+       expert parallelism (DP+EP for spec decoding PR #35294),
+       P/D disaggregation (KV transfer via NCCL/RDMA/NIXL+UCX).</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> — collectives on hot path.</p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>KV-connector transfer policy <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/distributed/kv_transfer/kv_connector/v1" target="_blank" rel="noreferrer">vllm/distributed/kv_transfer/kv_connector/v1/</a></div>
+    <p>When to push vs. pull KV blocks across the prefill→decode boundary; chunking + scheduling decisions.</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>Inter-instance KV-transfer latency, end-to-end TTFT under disaggregated serving.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Pipeline-bubble policy (PP overlap) <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu/pp_utils.py" target="_blank" rel="noreferrer">vllm/v1/worker/gpu/pp_utils.py</a></div>
+    <p>µbatch ordering for PP overlap; AsyncIntermediateTensors stride.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>EP / DP all-to-all routing <span class="pill pill-risk-high">risk: medium-high</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/worker/gpu" target="_blank" rel="noreferrer">vllm/v1/worker/gpu/eplb_utils.py · dp_utils.py</a></div>
+    <p>Expert-parallel load-balancing routing for MoE models.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Shoeybi et al. — Megatron-LM: Training Multi-Billion Parameter Language Models.</span> <span class="paper-meta">2019.</span> <span class="paper-id">arXiv:1909.08053</span></li>
+    <li><span class="paper-title">Huang et al. — GPipe: Pipeline Parallelism.</span> <span class="paper-meta">NeurIPS 2019.</span></li>
+    <li><span class="paper-title">Narayanan et al. — PipeDream-2BW.</span> <span class="paper-meta">ICML 2021.</span></li>
+    <li><span class="paper-title">Korthikanti et al. — Sequence Parallelism.</span> <span class="paper-meta">2022.</span> <span class="paper-id">arXiv:2205.05198</span></li>
+    <li><span class="paper-title">Liu et al. — Ring Attention / Context Parallelism.</span> <span class="paper-meta">2023.</span> <span class="paper-id">arXiv:2310.01889</span></li>
+    <li><span class="paper-title">Zhong et al. — DistServe.</span> <span class="paper-meta">OSDI 2024.</span></li>
+    <li><span class="paper-title">Patel et al. — Splitwise.</span> <span class="paper-meta">ISCA 2024.</span></li>
+    <li><span class="paper-title">Qin et al. — Mooncake.</span> <span class="paper-meta">FAST 2025.</span></li>
+    <li><span class="paper-title">Hu et al. — MemServe.</span> <span class="paper-meta">2024.</span></li>
+    <li><span class="paper-title">Shi, Cai et al. — Nexus: Proactive Intra-GPU Disaggregation.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">DuetServe.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2511.04791</span></li>
+    <li><span class="paper-title">FlowKV.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2504.03775</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="H_structured_output.html">
+      <span class="nav-label">← Prev · H</span>
+      <span class="nav-title">V1 Structured Output</span>
+    </a>
+    <a class="next" href="J_compilation_cuda_graphs.html">
+      <span class="nav-label">Next · J →</span>
+      <span class="nav-title">Compilation / CUDA Graphs</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

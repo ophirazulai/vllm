@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Q · Custom Triton/CUDA Ops · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/attention/ops" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>Q · Custom Triton / CUDA Ops
+    <span class="subtitle">RoPE, RMSNorm, fused activations, paged-attention V1/V2 kernels, sampling kernels, all-reduce custom ops.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/attention/ops/</code> (Triton attention ops),
+       <code>vllm/model_executor/layers/{rotary_embedding.py, layernorm.py, activation.py}</code>
+       plus C++/CUDA in <code>csrc/</code> (RoPE, RMSNorm, fused activations, paged-attention V1/V2 kernels,
+       sampling kernels, all-reduce custom ops).</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> — these are shared with V0 and ubiquitous.</p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>RoPE — rotary embedding <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py" target="_blank" rel="noreferrer">vllm/model_executor/layers/rotary_embedding.py</a> +
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/attention/ops" target="_blank" rel="noreferrer">vllm/attention/ops/ (Triton variants)</a></div>
+    <p>Broad shape distribution. Standard target in KernelBench.</p>
+    <dl class="kv-grid">
+      <dt>Metric</dt><dd>ms.</dd>
+      <dt>Evaluator</dt><dd>Microbench across (head_dim, num_heads, seq_len) shape distribution.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>RMSNorm fused <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/layernorm.py" target="_blank" rel="noreferrer">vllm/model_executor/layers/layernorm.py</a></div>
+    <p>Standard target in KernelBench. Fused-add-RMSNorm has measurable headroom on Hopper / Blackwell.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Fused activations <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/activation.py" target="_blank" rel="noreferrer">vllm/model_executor/layers/activation.py</a></div>
+    <p>SiLU + multiply (SwiGLU) fused kernel.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Paged-attention V1/V2 kernels <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/tree/main/csrc" target="_blank" rel="noreferrer">csrc/attention/</a></div>
+    <p>C++/CUDA kernels — rebuild cost makes per-candidate iteration expensive. Prefer Triton variants in <code>vllm/attention/ops/</code> first.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Tillet, Kung, Cox — Triton: An Intermediate Language and Compiler for Tiled Neural-Network Computations.</span> <span class="paper-meta">MAPL 2019.</span></li>
+    <li><span class="paper-title">Ouyang, Guo et al. — KernelBench: Can LLMs Write Efficient GPU Kernels?</span> <span class="paper-meta">ICML 2025.</span> <span class="paper-id">arXiv:2502.10517</span></li>
+    <li><span class="paper-title">Lange et al. — AI CUDA Engineer / robust-kbench.</span> <span class="paper-meta">Sakana AI 2025.</span></li>
+    <li><span class="paper-title">Baronio et al. — Kevin: Multi-Turn RL for Generating CUDA Kernels.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2507.11948</span></li>
+    <li><span class="paper-title">Li, Sun, Wang, Li, Shum — CUDA-L1: Improving CUDA Optimization via Contrastive RL.</span> <span class="paper-meta">ICLR 2026.</span> <span class="paper-id">arXiv:2507.14111</span></li>
+    <li><span class="paper-title">CUDA-L2.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2512.02551</span> <span class="paper-direction">Multi-stage RL with NCU profiling.</span></li>
+    <li><span class="paper-title">Andrews &amp; Witteveen — GPU Kernel Scientist.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2506.20807</span></li>
+    <li><span class="paper-title">Chen et al. — CUDA-LLM.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2506.09092</span></li>
+    <li><span class="paper-title">Tschand et al. — SwizzlePerf: Hardware-Aware LLMs for GPU Kernel Performance.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">EvoEngineer.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2510.03760</span></li>
+    <li><span class="paper-title">Kernel-Smith.</span> <span class="paper-meta">2026 anchor.</span> <span class="paper-id">arXiv:2603.28342</span></li>
+    <li><span class="paper-title">KernelFoundry: Hardware-Aware Evolutionary GPU Kernel Optimization.</span> <span class="paper-meta">2026.</span> <span class="paper-id">arXiv:2603.12440</span></li>
+    <li><span class="paper-title">Meta — KernelEvolve: Scaling Agentic Kernel Coding for Heterogeneous AI Accelerators.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2512.23236</span></li>
+    <li><span class="paper-title">AMD — GEAK-OptimAgentv2 / GEAK-OpenEvolve.</span> <span class="paper-meta">ROCm Blogs 2025.</span></li>
+    <li><span class="paper-title">Romera-Paredes et al. — FunSearch.</span> <span class="paper-meta">Nature 2024.</span></li>
+    <li><span class="paper-title">Novikov et al. — AlphaEvolve.</span> <span class="paper-meta">DeepMind 2025.</span> <span class="paper-id">arXiv:2506.13131</span> <span class="paper-direction">+23% kernel-tiling and +32% FlashAttention speedups internal to Google.</span></li>
+    <li><span class="paper-title">PyTorch / FAIR — KernelLLM-8B and KernelBook.</span> <span class="paper-meta">2025.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="P_cascade_attention.html">
+      <span class="nav-label">← Prev · P</span>
+      <span class="nav-title">Cascade Attention</span>
+    </a>
+    <span class="nav-empty"></span>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

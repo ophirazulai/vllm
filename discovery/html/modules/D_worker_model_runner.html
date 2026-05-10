@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D · V1 Worker / GPU Model Runner · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/worker" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>D · V1 Worker / GPU Model Runner
+    <span class="subtitle">Persistent batch tensors, input/position/slot-mapping, encoder cache, model forward, sampler, CUDA-graph capture.</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/v1/worker/</code> + <code>vllm/v1/worker/gpu/</code> (Model Runner V2 / MRV2).<br>
+       <strong>Key files (verified):</strong> <code>gpu_model_runner.py</code> (<code>GPUModelRunner</code>, 7,124 LoC at HEAD <code>e6ff3e9c8</code>;
+       "monolith" per <code>vllm-omni</code> RFC #1770), <code>gpu_worker.py</code> (<code>Worker</code> with
+       <code>AsyncIntermediateTensors</code> for PP comm overlap), <code>gpu_input_batch.py</code>, <code>gpu_ubatch_wrapper.py</code>,
+       <code>worker_base.py</code>, <code>workspace.py</code>, <code>block_table.py</code>, <code>cp_utils.py</code>,
+       <code>dp_utils.py</code>, <code>encoder_cudagraph.py</code> (+ defs), <code>ec_connector_model_runner_mixin.py</code>,
+       <code>kv_connector_model_runner_mixin.py</code>, <code>lora_model_runner_mixin.py</code>, <code>mamba_utils.py</code>,
+       <code>ubatching.py</code>, <code>ubatch_utils.py</code>, <code>cpu_model_runner.py</code>, <code>cpu_worker.py</code>,
+       <code>tpu_input_batch.py</code>, <code>xpu_model_runner.py</code>, <code>xpu_worker.py</code>.<br>
+       <strong>MRV2:</strong> <code>vllm/v1/worker/gpu/model_runner.py</code> + <code>states.py</code>,
+       <code>cudagraph_utils.py</code>, <code>attn_utils.py</code>, <code>block_table.py</code>, <code>dp_utils.py</code>,
+       <code>eplb_utils.py</code>, <code>input_batch.py</code>, <code>kv_connector.py</code>, <code>lora_utils.py</code>,
+       <code>pp_utils.py</code>, <code>shutdown.py</code>, <code>structured_outputs.py</code>, <code>warmup.py</code>,
+       and subdirs <code>mm/</code>, <code>pool/</code>, <code>sample/</code>, <code>spec_decode/</code>, <code>model_states/</code>, <code>metrics/</code>.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> — CPU side (input prep) and GPU side (attention/MLP) both hot.</p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>Input prep / slot-mapping construction <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu_input_batch.py" target="_blank" rel="noreferrer">vllm/v1/worker/gpu_input_batch.py</a></div>
+    <p>Numpy-heavy CPU path that builds input IDs, positions, and slot mappings every step. Optimize the layout / batching for cache locality.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>µbatching split rule <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/ubatching.py" target="_blank" rel="noreferrer">vllm/v1/worker/ubatching.py</a> ·
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/ubatch_utils.py" target="_blank" rel="noreferrer">ubatch_utils.py</a></div>
+    <p>How a step batch is split into µbatches for compute/comm overlap.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>MRV2 CudaGraphManager state interface <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu/cudagraph_utils.py" target="_blank" rel="noreferrer">vllm/v1/worker/gpu/cudagraph_utils.py</a></div>
+    <p>Newer MRV2 manager — capture set, replay strategy. Co-evolve with module J.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <p>This module is mostly stable infrastructure. Most of its evolve-leverage flows through
+     <a href="J_compilation_cuda_graphs.html">J · Compilation</a>, <a href="E_attention_backends.html">E · Attention</a>,
+     and <a href="L_moe.html">L · MoE</a>.</p>
+  <ol class="paper-list">
+    <li><span class="paper-title">Kwon et al. — PagedAttention / vLLM.</span> <span class="paper-meta">SOSP 2023.</span></li>
+    <li><span class="paper-title">vLLM-Omni RFC #1770 — Modular Model Runner V2.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">Pope et al. — Efficiently Scaling Transformer Inference.</span> <span class="paper-meta">MLSys 2023.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="C_kv_cache_manager.html">
+      <span class="nav-label">← Prev · C</span>
+      <span class="nav-title">V1 KV-Cache Manager</span>
+    </a>
+    <a class="next" href="E_attention_backends.html">
+      <span class="nav-label">Next · E →</span>
+      <span class="nav-title">V1 Attention Backends</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

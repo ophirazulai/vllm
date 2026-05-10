@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J · Compilation / CUDA Graphs · vLLM Discovery Map</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="../index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="../index.html">Overview</a>
+      <a href="../architecture.html">Architecture</a>
+      <a href="../inventory.html">Inventory</a>
+      <a href="../methodology.html">Methodology</a>
+      <a href="../index.html#modules">All Modules</a>
+      <a href="https://github.com/vllm-project/vllm/tree/main/vllm/compilation" target="_blank" rel="noreferrer">View on GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>J · Compilation / CUDA Graphs
+    <span class="subtitle">CUDAGraphWrapper (NONE/PIECEWISE/FULL), PiecewiseBackend, Inductor partition (torch≥2.9).</span>
+  </h1>
+
+  <section class="hero">
+    <p><strong>Path:</strong> <code>vllm/compilation/</code><br>
+       <strong>Key files (verified):</strong> <code>cuda_graph.py</code> (<code>CUDAGraphWrapper</code> with NONE/PIECEWISE/FULL runtime modes),
+       <code>piecewise_backend.py</code> (<code>PiecewiseBackend</code>), <code>backends.py</code>
+       (<code>VllmBackend</code>, <code>PiecewiseCompileInterpreter</code>), <code>decorators.py</code>,
+       <code>partition_rules.py</code>, <code>passes/</code>, <code>caching.py</code>, <code>codegen.py</code>,
+       <code>compiler_interface.py</code>, <code>wrapper.py</code>, <code>monitor.py</code>, <code>counter.py</code>,
+       <code>base_static_graph.py</code>.<br>
+       <strong>Default mode in V1:</strong> <code>FULL_AND_PIECEWISE</code> (full CUDA graph for uniform-decode, piecewise for prefill / mixed).</p>
+    <p><em>Note:</em> earlier drafts named <code>cuda_piecewise_backend.py</code> — the actual filename is <code>piecewise_backend.py</code>.</p>
+    <p class="anchor"><span class="pill pill-crit-high">criticality: high</span> <span class="pill pill-rank">target #7</span></p>
+  </section>
+
+  <h2>Evolve Locations</h2>
+
+  <div class="evolve-loc">
+    <h3>CUDA-graph mode dispatcher <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/cuda_graph.py" target="_blank" rel="noreferrer">vllm/compilation/cuda_graph.py</a> +
+      <a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/piecewise_backend.py" target="_blank" rel="noreferrer">vllm/compilation/piecewise_backend.py</a></div>
+    <p>(a) The set of <code>cudagraph_capture_sizes</code>; (b) the FULL vs PIECEWISE vs FULL_AND_PIECEWISE selection rule
+       per (model_size, attention_backend, batch_shape) — currently a static mode flag.</p>
+    <dl class="kv-grid">
+      <dt>What to evolve</dt><dd>Capture-size schedule + mode selection function.</dd>
+      <dt>Evaluator</dt><dd><code>vllm bench latency</code> across {Llama-3-8B, 70B, Qwen3-30B-MoE, DeepSeek-V3} × {H100, B200} × representative TTFT/TPOT shape distributions.</dd>
+      <dt>Metric</dt><dd>End-to-end p50 + p99 latency; penalize capture memory overhead.</dd>
+      <dt>Risk</dt><dd>Low — mode selection can fall back to current default.</dd>
+    </dl>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>PiecewiseBackend.compile_sizes <span class="pill pill-risk-low">risk: low</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/piecewise_backend.py" target="_blank" rel="noreferrer">vllm/compilation/piecewise_backend.py</a></div>
+    <p>Capture set + autotuned defaults in <code>vllm/config/compilation.py</code>.</p>
+  </div>
+
+  <div class="evolve-loc">
+    <h3>Inductor partition rules <span class="pill pill-risk-medium">risk: medium</span></h3>
+    <div class="loc-path"><a href="https://github.com/vllm-project/vllm/blob/main/vllm/compilation/partition_rules.py" target="_blank" rel="noreferrer">vllm/compilation/partition_rules.py</a></div>
+    <p>Inductor graph partition (<code>use_inductor_graph_partition=True</code>, torch≥2.9). Boundaries that cleanly split graphs
+       reduce CUDA-graph capture overhead.</p>
+  </div>
+
+  <h2>Related Literature</h2>
+  <ol class="paper-list">
+    <li><span class="paper-title">Ansel et al. — PyTorch 2: torch.compile / Inductor.</span> <span class="paper-meta">ASPLOS 2024.</span></li>
+    <li><span class="paper-title">Tillet et al. — Triton.</span> <span class="paper-meta">MAPL 2019.</span></li>
+    <li><span class="paper-title">Jia, Padon et al. — TASO: Optimizing Deep Learning Computation with Automatic Generation of Graph Substitutions.</span> <span class="paper-meta">SOSP 2019.</span></li>
+    <li><span class="paper-title">vLLM CUDA Graphs Design Doc.</span> <span class="paper-meta">docs/design/cuda_graphs.md.</span> <span class="paper-direction">Primary reference.</span></li>
+    <li><span class="paper-title">NVIDIA — CUDA Graphs in CUDA 11/12.</span> <span class="paper-meta">Technical blogs.</span></li>
+    <li><span class="paper-title">Chen et al. — TVM: An Automated End-to-End Optimizing Compiler.</span> <span class="paper-meta">OSDI 2018.</span></li>
+    <li><span class="paper-title">Zheng et al. — Ansor: Generating High-Performance Tensor Programs.</span> <span class="paper-meta">OSDI 2020.</span></li>
+    <li><span class="paper-title">Wang et al. — FlashInfer JIT compilation.</span> <span class="paper-meta">MLSys 2025.</span></li>
+  </ol>
+
+  <nav class="module-nav">
+    <a class="prev" href="I_distributed_kv_connector.html">
+      <span class="nav-label">← Prev · I</span>
+      <span class="nav-title">Distributed / KV+EC Connector</span>
+    </a>
+    <a class="next" href="K_quantization.html">
+      <span class="nav-label">Next · K →</span>
+      <span class="nav-title">Quantization</span>
+    </a>
+  </nav>
+
+  <p style="margin-top:18px;font-size:13px;"><a href="../index.html#modules">← Back to module index</a> · <a href="../inventory.html">Flat inventory</a> · <a href="../methodology.html">Methodology</a> · <a href="../architecture.html">Architecture</a></p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>

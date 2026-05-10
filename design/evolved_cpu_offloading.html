@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evolved CPU Offloading — High-Level Overview</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1c212c;
+    --ink: #e7ecf3;
+    --muted: #9aa4b2;
+    --accent: #7cc4ff;
+    --accent-2: #b48cff;
+    --good: #6ee7a7;
+    --warn: #ffcc66;
+    --bad: #ff7b7b;
+    --line: #2a3140;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 40px 28px 80px;
+  }
+  header.hero {
+    border: 1px solid var(--line);
+    background: linear-gradient(140deg, #1a2030, #11151d 60%);
+    border-radius: 14px;
+    padding: 28px 28px 24px;
+    margin-bottom: 28px;
+  }
+  header.hero h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    letter-spacing: -0.01em;
+  }
+  header.hero .sub {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  header.hero .pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #222b3a;
+    border: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 12px;
+  }
+  .pill.accent { color: var(--accent); border-color: #2a4a66; background: #142433; }
+  .pill.purple { color: var(--accent-2); border-color: #3a2a55; background: #1d1730; }
+  .pill.good   { color: var(--good); border-color: #2a4a3a; background: #142219; }
+  .pill.warn   { color: var(--warn); border-color: #4a3a1a; background: #221a08; }
+
+  nav.toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 28px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 12px;
+    font-size: 13px;
+  }
+  nav.toc a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dashed transparent;
+  }
+  nav.toc a:hover { border-bottom-color: var(--accent); }
+
+  section {
+    margin: 0 0 28px;
+    padding: 22px 24px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  section h2 {
+    margin: 0 0 12px;
+    font-size: 20px;
+    letter-spacing: -0.005em;
+    color: var(--ink);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  section h2 .num {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: #142433;
+    border: 1px solid #2a4a66;
+  }
+  section h3 {
+    margin: 22px 0 8px;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  p { margin: 8px 0; }
+  p.lead { color: var(--muted); margin-top: 0; }
+
+  ul, ol { margin: 8px 0 8px 20px; padding: 0; }
+  li { margin: 4px 0; }
+
+  code {
+    font: 13px/1.4 "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: #d8e0ec;
+  }
+  pre {
+    background: #0d1117;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    margin: 10px 0;
+  }
+  pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: #d8e0ec;
+    white-space: pre;
+  }
+  .api-block {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 14px 0;
+  }
+  .api-block .api-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .api-block .verb {
+    font: 600 11px/1 "JetBrains Mono", "SF Mono", Menlo, monospace;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+  .api-block .verb.get   { background: #142433; color: var(--accent); border: 1px solid #2a4a66; }
+  .api-block .verb.post  { background: #1d1730; color: var(--accent-2); border: 1px solid #3a2a55; }
+  .api-block .verb.py    { background: #142219; color: var(--good); border: 1px solid #2a4a3a; }
+  .api-block .path {
+    font: 13px/1.4 "JetBrains Mono", "SF Mono", Menlo, monospace;
+    color: var(--ink);
+  }
+  .api-block .summary { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
+  .api-block h5 {
+    margin: 12px 0 4px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .api-block ul.params { margin: 4px 0 4px 18px; }
+  .api-block ul.params li { font-size: 13.5px; }
+  .api-block ul.params code { font-size: 12.5px; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 8px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 14px;
+    margin-top: 8px;
+  }
+  @media (max-width: 760px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--accent);
+  }
+  .card.purple h4 { color: var(--accent-2); }
+  .card.good   h4 { color: var(--good); }
+  .card.warn   h4 { color: var(--warn); }
+  .card p { margin: 4px 0; color: var(--ink); font-size: 14px; }
+  .card .small { color: var(--muted); font-size: 12.5px; }
+
+  /* Flow diagram */
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin: 14px 0 4px;
+  }
+  .flow .step {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+    font-size: 12.5px;
+    position: relative;
+  }
+  .flow .step .n {
+    display: inline-block;
+    width: 22px; height: 22px; line-height: 22px;
+    border-radius: 50%;
+    background: #142433;
+    border: 1px solid #2a4a66;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  @media (max-width: 760px) {
+    .flow { grid-template-columns: 1fr 1fr; }
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 13.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: #131c28;
+    padding: 10px 14px;
+    border-radius: 0 8px 8px 0;
+    color: var(--ink);
+    margin: 12px 0;
+    font-size: 13.5px;
+  }
+  .callout.warn { border-left-color: var(--warn); background: #1f1808; }
+  .callout.bad  { border-left-color: var(--bad); background: #1f0e0e; }
+  .callout.good { border-left-color: var(--good); background: #0e1f15; }
+  .callout strong { color: var(--accent); }
+  .callout.warn strong { color: var(--warn); }
+  .callout.bad strong { color: var(--bad); }
+  .callout.good strong { color: var(--good); }
+
+  footer {
+    margin-top: 30px;
+    color: var(--muted);
+    font-size: 12.5px;
+    text-align: center;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+
+  .kbd {
+    font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+    background: #0d1117;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12.5px;
+    color: var(--accent);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Evolved CPU Offloading — Hot-Swap API for vLLM &times; CORAL</h1>
+  <div class="sub">High-level overview &middot; branch <code>feat/evolved_cpu_offloading</code> &middot; design proposal</div>
+  <div class="pills">
+    <span class="pill accent">CPU offloading</span>
+    <span class="pill purple">Hot-swap</span>
+    <span class="pill good">Policy hints</span>
+    <span class="pill warn">Default-off / opt-in</span>
+    <span class="pill">Phase 1 — KV cache only</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#background">1. Background</a>
+  <a href="#offloading">2. CPU offloading</a>
+  <a href="#hotswap">3. Hot-swap</a>
+  <a href="#hints">4. Policy hints</a>
+  <a href="#safety">5. Safety net</a>
+  <a href="#api">6. API reference</a>
+  <a href="#api-runtime">6.1 Runtime API</a>
+  <a href="#api-policy">6.2 CachePolicy ABC</a>
+  <a href="#api-http">6.3 Hot-swap HTTP</a>
+  <a href="#api-python">6.4 Hot-swap Python</a>
+  <a href="#api-hints">6.5 Hints API</a>
+  <a href="#api-stats">6.6 Stats &amp; metrics</a>
+  <a href="#nongoals">7. Scope</a>
+</nav>
+
+<section id="background">
+  <h2><span class="num">1</span> Background — why this exists</h2>
+  <p class="lead">vLLM offloads cold KV-cache blocks from GPU to CPU to extend usable context length and batch size. The eviction strategy directly controls hit rate, transfer volume, and tail latency — and there is no single best policy. It depends on workload shape, model, hardware, and request mix.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>The problem</h4>
+      <p>Different deployments want different policies (LRU, ARC, custom). Hand-tuning is slow and rarely reaches the optimum for a specific workload.</p>
+    </div>
+    <div class="card purple">
+      <h4>The opportunity</h4>
+      <p><a href="https://github.com/Human-Agent-Society/CORAL" style="color:inherit">CORAL</a> is an evolutionary search framework: an LLM proposes source-code mutations, a grader scores each candidate, the population improves over generations.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>The bottleneck:</strong> spinning up a fresh vLLM engine per candidate is too slow — model load times dominate and mask the fitness signal CORAL is trying to optimise. The fix is to let CORAL <em>swap a new policy into a running engine</em> with zero restart.
+  </div>
+</section>
+
+<section id="offloading">
+  <h2><span class="num">2</span> CPU offloading — what gets swapped</h2>
+  <p class="lead">vLLM's CPU offloading layer keeps a pool of CPU blocks that mirror evicted GPU KV-cache blocks. Whether a block is admitted, kept, or evicted is decided by a small <code>CachePolicy</code> object inside the scheduler-side <code>CPUOffloadingManager</code>. That single mutable pointer is the swap target.</p>
+
+  <h3>The interface</h3>
+  <p>Every policy implements five core operations plus state-transfer hooks and a constructor:</p>
+  <div class="grid-2">
+    <div class="card">
+      <h4>Read-side &middot; safe to suppress</h4>
+      <ul>
+        <li><code>get(key)</code> — content-addressed lookup; <code>None</code> means miss</li>
+        <li><code>touch(keys, ctx)</code> — recency hint, advisory</li>
+        <li><code>evict(n, protected, ctx)</code> — propose up to <em>n</em> victims; <code>None</code> means "couldn't free a slot this step"</li>
+      </ul>
+    </div>
+    <div class="card purple">
+      <h4>Write-side &middot; must succeed</h4>
+      <ul>
+        <li><code>insert(key, block, ctx)</code> — admit a new block</li>
+        <li><code>remove(key)</code> — manager-internal cleanup</li>
+        <li><code>export_state()</code> / <code>import_state()</code> — swap-migration hooks</li>
+      </ul>
+    </div>
+  </div>
+
+  <p style="margin-top:14px">Built-in <code>LRUCachePolicy</code> and <code>ARCCachePolicy</code> implement the same ABC. Evolved policies subclass it and may consume the optional per-request <code>req_context</code> on insert/touch/evict. Class metadata (<code>POLICY_NAME</code>, <code>POLICY_VERSION</code>) is required for telemetry and reproducibility.</p>
+</section>
+
+<section id="hotswap">
+  <h2><span class="num">3</span> Hot-swap — replace policy in a live engine</h2>
+  <p class="lead">A swap atomically replaces <code>manager._policy</code> while preserving in-flight requests, the CPU block pool, and resident block ownership. On any failure, the prior policy is restored before the lock is released — there is no half-applied state.</p>
+
+  <h3>Three delivery modes</h3>
+  <div class="grid-3">
+    <div class="card"><h4>file path</h4><p class="small">Engine reads <code>/abs/path/policy.py</code> from its own filesystem.</p></div>
+    <div class="card"><h4>dotted module</h4><p class="small">Resolves the source-backed <code>.py</code> file behind <code>my_pkg.evolved_v3</code>.</p></div>
+    <div class="card"><h4>raw source</h4><p class="small">Source string sent over the wire — no filesystem dependency.</p></div>
+  </div>
+  <p class="small" style="color:var(--muted);margin-top:8px">All three paths execute the source under a <em>fresh synthetic module</em> name (<code>vllm._evolved.&lt;hash&gt;.&lt;nonce&gt;</code>), so two loads of the same logical module produce distinct module objects with no shared globals. No <code>importlib.reload</code>, no overwriting user-controlled module names.</p>
+
+  <h3>Swap algorithm — what happens under the lock</h3>
+  <div class="flow">
+    <div class="step"><span class="n">1</span><div>Snapshot<br><span class="small">old policy &amp; resident blocks via <code>export_state</code></span></div></div>
+    <div class="step"><span class="n">2</span><div>Construct<br><span class="small">new policy with <code>policy_kwargs</code></span></div></div>
+    <div class="step"><span class="n">3</span><div>Migrate<br><span class="small"><code>import_state</code> on the new policy</span></div></div>
+    <div class="step"><span class="n">4</span><div>Canary<br><span class="small">exercise full read+write on a separate empty instance</span></div></div>
+    <div class="step"><span class="n">5</span><div>Pointer flip<br><span class="small">wrap evolved policy in supervisor, swap into manager, bump generation</span></div></div>
+  </div>
+  <p class="small" style="color:var(--muted);margin-top:6px">If <em>any</em> step from 1 onward fails, the rollback restores the prior <code>manager._policy</code> before releasing the lock. The canary runs on a brand-new empty policy — never on the migrated one — so a sentinel <code>evict</code> can never silently remove a real imported block.</p>
+
+  <h3>Where the swap runs</h3>
+  <p>The loader executes <em>inside the engine process</em>, not in the API server. Source/path/module is sent over IPC via the existing <code>call_utility</code> plumbing (the same pattern LoRA add/remove uses). Class objects are never pickled across the boundary.</p>
+
+  <div class="callout">
+    <strong>Default-off, opt-in:</strong> the feature is disabled unless the operator passes <span class="kbd">--enable-policy-hotswap</span>, sets <code>enable_policy_hotswap=True</code> in Python, or sets <span class="kbd">VLLM_ENABLE_POLICY_HOTSWAP=1</span>. The HTTP route additionally requires a localhost client unless <span class="kbd">VLLM_POLICY_HOTSWAP_ALLOW_REMOTE=1</span>. Source SHA-256 is logged on every load.
+  </div>
+
+  <h3>State migration — what carries forward</h3>
+  <table>
+    <thead><tr><th>Carries forward</th><th>Does not</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>(key, BlockStatus)</code> for every resident block — by reference, so the manager's <code>_free_list</code> and <code>_num_allocated_blocks</code> stay coherent.</td>
+        <td>Recency &amp; ghost-list metadata (LRU order, ARC T1/T2 boundary). Evolved policies must accept a brief warm-up window post-swap.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="hints">
+  <h2><span class="num">4</span> Per-request policy hints — co-evolving signal</h2>
+  <p class="lead">Hot-swappable code is half the story. The other half is <em>what the policy gets to look at</em>. CORAL should be free to invent new request-level signal — priority, session id, expected reuse, tenant id, deadline — and have the evolved policy consume it at eviction time, all without changing vLLM's HTTP/Python schema across generations.</p>
+
+  <h3>Carrier — reuse what's already there</h3>
+  <p>Both <code>CompletionRequest</code> and <code>ChatCompletionRequest</code> already expose <code>vllm_xargs</code> as the documented user-extension field. We pick the sub-key <code>policy_hints</code> and treat it as opaque <code>dict[str, Any]</code> end-to-end. <strong>No HTTP schema change is required.</strong></p>
+
+  <h3>End-to-end path</h3>
+  <div class="flow">
+    <div class="step"><span class="n">1</span><div>HTTP request<br><span class="small"><code>vllm_xargs.policy_hints</code></span></div></div>
+    <div class="step"><span class="n">2</span><div><code>SamplingParams</code><br><span class="small"><code>extra_args["policy_hints"]</code></span></div></div>
+    <div class="step"><span class="n">3</span><div><code>Request</code><br><span class="small">validated, <code>_request_id</code> injected</span></div></div>
+    <div class="step"><span class="n">4</span><div><code>ReqContext</code><br><span class="small">populated alongside <code>kv_transfer_params</code></span></div></div>
+    <div class="step"><span class="n">5</span><div>Policy method<br><span class="small"><code>insert</code> / <code>touch</code> / <code>evict</code> sees hints</span></div></div>
+  </div>
+
+  <h3>Design choices</h3>
+  <div class="grid-2">
+    <div class="card good">
+      <h4>Additive &amp; default-None</h4>
+      <p>Built-in LRU/ARC accept and ignore <code>req_context</code>. Operators not running hot-swap pay nothing. Evolved policies opt in only where they need it.</p>
+    </div>
+    <div class="card good">
+      <h4>Reserved <code>_request_id</code></h4>
+      <p>The carrier injects a stable per-request handle so policies don't have to invent one. Names starting with <code>_</code> are framework-reserved.</p>
+    </div>
+    <div class="card warn">
+      <h4>Cross-request merge is policy-defined</h4>
+      <p><code>OffloadKey</code> is content-addressed: request A inserts, request B touches. Each call gets the <em>caller's</em> hints; the policy decides the merge convention (last-wins, weighted, custom).</p>
+    </div>
+    <div class="card warn">
+      <h4>Untrusted user input</h4>
+      <p>Hints come from any HTTP client. Framework guarantees only that hints are <code>None</code> or a <code>dict</code>. Evolved policies must validate shape, types, and sizes themselves — no <code>eval</code>, no path traversal, no PII echoing.</p>
+    </div>
+  </div>
+
+  <h3>Telemetry — <code>hint_keys</code></h3>
+  <p>The manager unions the <em>top-level keys</em> seen in <code>policy_hints</code> per stats window (values are deliberately not exported — keys leak less than values). The grader uses this as a smoke signal that its client shim's hints actually propagated.</p>
+</section>
+
+<section id="safety">
+  <h2><span class="num">5</span> Safety net — surviving buggy policies</h2>
+  <p class="lead">CORAL will produce candidates that pass the swap-time canary but misbehave under load. The engine cannot crash on these — every crash forces a fresh <code>LLM</code>, defeating the point of hot-swap. A layered defence wraps every <em>evolved</em> policy (built-ins are not wrapped and pay no overhead).</p>
+
+  <div class="grid-3">
+    <div class="card good">
+      <h4>SupervisedCachePolicy</h4>
+      <p>Inline wrapper installed at swap time. Read-side exceptions (<code>get</code>, <code>evict</code>, <code>touch</code>) become safe defaults — degraded gets become misses, degraded evicts mean "couldn't free a slot this step".</p>
+    </div>
+    <div class="card warn">
+      <h4>Error budget &amp; trip</h4>
+      <p>Each suppressed exception increments an error counter. When the budget is exhausted the supervisor trips and signals for rollback at the next safe point.</p>
+    </div>
+    <div class="card good">
+      <h4>Cold auto-rollback</h4>
+      <p>At a quiescent point (next external swap, or via <code>EngineCore</code>'s idle callback) the registry recovers into a fresh <code>LRUCachePolicy</code> populated from the failed policy's exported residents. Block pool is reconciled — no leaked CPU slots.</p>
+    </div>
+  </div>
+
+  <h3>Manager hardening</h3>
+  <p><code>prepare_store</code> allocates blocks then calls <code>_policy.insert</code> in a loop. The hardened version unwinds successful inserts and frees their blocks if a later insert raises, then returns <code>None</code> instead of crashing — the offloading connector retries on the next step. Worth landing on its own merit, since even built-in policies could in principle raise (e.g. OOM during dict resize).</p>
+
+  <h3>Stats expose the protection signal</h3>
+  <p>Snapshots include <code>policy_errors</code>, <code>policy_rolled_back</code>, and <code>rollback_generation</code>. These are sticky-within-window: the grader can call <code>get_offload_policy_stats()</code> after a candidate finishes and still see whether its score came from the candidate or from the recovered baseline.</p>
+
+  <div class="callout warn">
+    <strong>What it does not protect against:</strong> a policy that calls <code>os._exit()</code>, mutates <code>manager.__dict__</code> directly, or hangs in an infinite <code>evict()</code> loop. The supervisor is a robustness layer, not a security boundary — the default-off / localhost-only gating from <a href="#hotswap">§3</a> is what guards against running untrusted code in the first place.
+  </div>
+</section>
+
+<section id="api">
+  <h2><span class="num">6</span> API reference</h2>
+  <p class="lead">Three layers of API stack on top of each other. The <strong>runtime API</strong> (<code>OffloadingManager</code>) is what the offloading connector calls every scheduler step to look up, load, store, and evict KV blocks. The <strong>policy API</strong> (<code>CachePolicy</code>) is the seam an evolved policy plugs into — every runtime call ultimately fans out to one or more policy methods. The <strong>control plane</strong> (HTTP + Python) lets an outside actor (CORAL grader, operator, test) swap the active policy and read stats without touching the running engine.</p>
+
+  <div class="callout">
+    <strong>How the layers connect.</strong> A request flows <em>scheduler → connector → manager → policy → block pool</em>. The manager owns the block pool and ref-counting; the policy owns the index and the eviction decision. Hot-swap replaces the policy pointer between scheduler steps; the manager and block pool are unchanged.
+  </div>
+
+  <h3 id="api-runtime">6.1 Runtime API — <code>OffloadingManager</code></h3>
+  <p>Defined at <a href="../vllm/v1/kv_offload/base.py"><code>vllm/v1/kv_offload/base.py</code></a>. The CPU implementation lives at <a href="../vllm/v1/kv_offload/cpu/manager.py"><code>vllm/v1/kv_offload/cpu/manager.py</code></a>. Every method runs on the scheduler thread; all state mutations are single-threaded by construction.</p>
+
+  <p class="small" style="color:var(--muted)">Two key types you will see throughout: <code>OffloadKey</code> is the content-addressed identifier for a block (a byte string packing a block hash + KV-cache-group index — see <code>make_offload_key</code>); <code>BlockStatus</code> is a <code>ctypes.Structure</code> holding <code>(ref_cnt, block_id)</code>. <code>ref_cnt = -1</code> means "not yet ready to read"; <code>block_id</code> indexes into the CPU buffer pool. <code>ReqContext</code> is a small dataclass with two fields: <code>kv_transfer_params</code> and <code>policy_hints</code> — both <code>None</code> unless populated from <code>sampling_params.extra_args</code>.</p>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">lookup(key, req_context) -&gt; bool</span></div>
+    <p class="summary">Is this block already offloaded and ready to read?</p>
+    <h5>Inputs</h5>
+    <ul class="params">
+      <li><code>key: OffloadKey</code> — single block to check.</li>
+      <li><code>req_context: ReqContext</code> — populated from the requesting <code>Request</code>; carries <code>policy_hints</code>.</li>
+    </ul>
+    <h5>Returns</h5>
+    <ul class="params">
+      <li><code>True</code> if <code>_policy.get(key)</code> returns a <code>BlockStatus</code> whose <code>ref_cnt &gt;= 0</code> (the block has finished its <code>complete_store</code>).</li>
+      <li><code>False</code> if the block is missing or still in-flight.</li>
+      <li>The <code>ABC</code> permits returning <code>None</code> to mean "retry later"; the CPU implementation never does so.</li>
+    </ul>
+    <h5>Side effects</h5>
+    <ul class="params">
+      <li>Increments <code>_stat_lookups</code>, and <code>_stat_hits</code> on a hit.</li>
+      <li>Adds the top-level keys of <code>req_context.policy_hints</code> to <code>_stat_hint_keys</code> (telemetry only — values are not exported).</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">prepare_load(keys, req_context) -&gt; LoadStoreSpec</span></div>
+    <p class="summary">Pin a set of resident blocks so they cannot be evicted while a worker reads them.</p>
+    <h5>Behavior</h5>
+    <ul class="params">
+      <li>For every <code>key</code>, asserts the block is resident and ready, then increments <code>BlockStatus.ref_cnt</code> by 1. The block stays pinned until a matching <code>complete_load</code> call arrives.</li>
+      <li>Returns a <code>CPULoadStoreSpec</code> wrapping the block IDs that the worker side will use to issue the actual D2H/H2D copy.</li>
+    </ul>
+    <h5>Errors</h5>
+    <ul class="params">
+      <li>Asserts on a missing key or a not-ready block — the caller is expected to gate this on a prior <code>lookup</code>. A buggy policy that returns <code>None</code> for a key the manager believes is resident trips this assert; that is the intended loud-failure path (§5).</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">touch(keys, req_context) -&gt; None</span></div>
+    <p class="summary">Recency hint for blocks that did not need a read (e.g. served from the GPU prefix cache).</p>
+    <h5>Behavior</h5>
+    <ul class="params">
+      <li>Forwards directly to <code>_policy.touch(keys, req_context)</code>. The base implementation on <code>OffloadingManager</code> is a no-op; the CPU subclass forwards.</li>
+      <li>Advisory only — suppressing it costs only recency information.</li>
+      <li>Called from <code>OffloadingConnectorScheduler._touch</code> at <em>both</em> the full-attention and sliding-window branches; the scheduler always has <code>req_status.req_context</code> in scope.</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">complete_load(keys) -&gt; None</span></div>
+    <p class="summary">Match for an earlier <code>prepare_load</code>: decrement <code>ref_cnt</code> on each block.</p>
+    <h5>Notes</h5>
+    <ul class="params">
+      <li>Asserts <code>ref_cnt &gt; 0</code> on entry. If a buggy policy lost the block between the prepare and the complete, this assert is the loud failure that triggers <code>SupervisedCachePolicy</code> rollback.</li>
+      <li>Context-free — no <code>req_context</code> parameter; by the time the load completes, the original request may already have moved on.</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">prepare_store(keys, req_context) -&gt; PrepareStoreOutput | None</span></div>
+    <p class="summary">Make room for and admit new blocks. The hot path of the offloading connector.</p>
+    <h5>Algorithm</h5>
+    <ol>
+      <li>Filter out keys already resident — those don't need re-store.</li>
+      <li>If the remaining set exceeds free capacity, call <code>_policy.evict(num, protected, req_context)</code> with <code>protected = set(keys)</code>. <code>None</code> from the policy means "couldn't satisfy this step" and propagates up as <code>None</code>; the connector retries next step.</li>
+      <li>Validate the policy's eviction output structurally: list type, length, no duplicate keys / block IDs, no protected keys, every block in range, every block <code>ref_cnt == 0</code>, post-evict <code>get</code> returns <code>None</code>. Malformed output → log + <code>record_write_error</code> + return <code>None</code>.</li>
+      <li>Allocate the block pool slots, then loop <code>_policy.insert(key, block, req_context)</code>. <strong>Hardened insert loop</strong> (§5): if <em>any</em> insert raises, undo all prior inserts (best-effort <code>remove</code>), free every allocated block, call <code>record_write_error</code>, return <code>None</code> instead of crashing.</li>
+      <li>Build a <code>CPULoadStoreSpec</code> with the new block IDs and return it inside <code>PrepareStoreOutput</code> alongside the list of evicted keys (consumed by the connector for downstream KV-event emission).</li>
+    </ol>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">complete_store(keys, success=True) -&gt; None</span></div>
+    <p class="summary">Finalize a previously prepared store. On <code>success=True</code> the block becomes loadable; on <code>success=False</code> the block is reclaimed.</p>
+    <h5>Behavior</h5>
+    <ul class="params">
+      <li><code>success=True</code> → set <code>ref_cnt = 0</code> on each not-yet-ready block, emit an <code>OffloadingEvent(removed=False)</code>.</li>
+      <li><code>success=False</code> → call <code>_policy.remove(key)</code> (best-effort; exceptions are caught and routed to <code>record_write_error</code>), then free the block. The engine survives a buggy <code>remove</code>.</li>
+      <li>Already-resident keys (those whose <code>get</code> returns <code>None</code> or whose block is already ready) are silently skipped — handles races with parallel stores cleanly.</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">take_events() -&gt; Iterable[OffloadingEvent]</span></div>
+    <p class="summary">Drain the event buffer (only populated when <code>enable_events=True</code>). Used by KV-event emitters that publish offload activity downstream.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">runtime</span><span class="path">take_policy_stats(reset, active_generation) -&gt; dict</span></div>
+    <p class="summary">Snapshot of manager-owned counters consumed by the registry's stats API. Returns a plain dict so the registry composes it with supervisor / sticky-rollback fields without circular import.</p>
+    <h5>Fields</h5>
+    <ul class="params">
+      <li><code>lookups</code>, <code>hits</code>, <code>stores</code>, <code>evictions</code>, <code>loads</code> — counters since last reset.</li>
+      <li><code>hit_rate</code> — <code>hits / max(lookups, 1)</code>.</li>
+      <li><code>window_start_generation</code>, <code>active_generation</code> — let the grader detect that a window spans multiple policies.</li>
+      <li><code>hint_keys</code> — sorted tuple of top-level hint keys observed since last reset.</li>
+    </ul>
+    <h5>Reset semantics</h5>
+    <ul class="params">
+      <li><code>reset=True</code> zeroes counters and bumps <code>window_start_generation</code> to the current <code>active_generation</code>; clears <code>hint_keys</code>. The CORAL grader calls this at the start of each candidate's run.</li>
+    </ul>
+  </div>
+
+  <h3 id="api-policy">6.2 Policy API — <code>CachePolicy</code></h3>
+  <p>Defined at <a href="../vllm/v1/kv_offload/cpu/policies/base.py"><code>vllm/v1/kv_offload/cpu/policies/base.py</code></a>. Every evolved policy subclasses this ABC. Built-ins <code>LRUCachePolicy</code> and <code>ARCCachePolicy</code> are reference implementations.</p>
+
+  <p>An evolved policy looks like this:</p>
+<pre><code>from collections.abc import Iterable
+from vllm.v1.kv_offload.base import OffloadKey, ReqContext
+from vllm.v1.kv_offload.cpu.policies.base import BlockStatus, CachePolicy
+
+class MyPolicy(CachePolicy):
+    POLICY_NAME = "tournament-arc"
+    POLICY_VERSION = "v3"
+
+    def __init__(self, cache_capacity: int, **kwargs):
+        self._cap = cache_capacity
+        self._table: dict[OffloadKey, BlockStatus] = {}
+        # ... custom data structures ...
+
+    def get(self, key):
+        return self._table.get(key)
+
+    def insert(self, key, block, req_context=None):
+        priority = (req_context.policy_hints or {}).get("priority", "normal") \
+            if req_context else "normal"
+        # ... policy-specific bookkeeping ...
+        self._table[key] = block
+
+    def remove(self, key):
+        self._table.pop(key, None)
+
+    def touch(self, keys, req_context=None):
+        # ... bump recency ...
+        pass
+
+    def evict(self, n, protected, req_context=None):
+        candidates = [k for k in self._table if k not in protected]
+        if len(candidates) &lt; n:
+            return None
+        victims = self._pick(candidates, n, req_context)
+        return [(k, self._table.pop(k)) for k in victims]
+
+    def export_state(self):
+        for key, block in self._table.items():
+            yield key, block</code></pre>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">__init__(cache_capacity: int, **kwargs)</span></div>
+    <p class="summary">Construct an empty policy sized for <code>cache_capacity</code> CPU block slots. The widened signature lets the swap request pass <code>policy_kwargs</code> through; built-ins ignore extra kwargs.</p>
+    <p class="small">Class-level metadata (<code>POLICY_NAME</code>, <code>POLICY_VERSION</code>) is read by the registry for telemetry and reproducibility — required to be non-empty before the pointer flip (the request body's <code>name</code>/<code>version</code> can override them).</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">get(key) -&gt; BlockStatus | None</span></div>
+    <p class="summary">Content-addressed lookup. <code>None</code> means "not in cache" — including not-yet-stored. Context-free because <code>get</code> may run outside any request scope (e.g., supervisor cold-rollback validation).</p>
+    <p class="small">Read-side. Wrapped by <code>SupervisedCachePolicy</code>: exceptions are converted to <code>None</code> (a forced miss) and increment the error budget.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">insert(key, block, req_context=None) -&gt; None</span></div>
+    <p class="summary">Admit a freshly allocated <code>BlockStatus</code> under <code>key</code>. Called from <code>prepare_store</code> after the manager has reserved a CPU slot. The block will be in the not-ready state (<code>ref_cnt = -1</code>) until a matching <code>complete_store</code> arrives.</p>
+    <h5>Hint usage</h5>
+    <ul class="params">
+      <li>If <code>req_context</code> is non-<code>None</code>, <code>req_context.policy_hints</code> is the per-request opaque dict (or <code>None</code>). Read keys you care about; tolerate missing keys.</li>
+      <li>Do not mutate the dict — multiple touch/evict callers may see it.</li>
+    </ul>
+    <p class="small">Write-side. Exceptions propagate to the manager's hardened loop, which unwinds and frees blocks. <code>SupervisedCachePolicy</code> does <em>not</em> swallow write-side exceptions; instead the manager calls <code>record_write_error</code>.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">remove(key) -&gt; None</span></div>
+    <p class="summary">Manager-internal cleanup. Called from <code>complete_store(success=False)</code> and from the hardened-loop rollback path. No request scope.</p>
+    <p class="small">Idempotent removal is safest; <code>complete_store</code> calls <code>remove</code> best-effort and continues regardless of exceptions.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">touch(keys, req_context=None) -&gt; None</span></div>
+    <p class="summary">Bump recency for an iterable of keys. The default contract is "advisory" — the manager continues if this raises (read-side suppression by <code>SupervisedCachePolicy</code>).</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">evict(n, protected, req_context=None) -&gt; list[(key, block)] | None</span></div>
+    <p class="summary">Free exactly <code>n</code> slots, never touching keys in <code>protected</code>.</p>
+    <h5>Contract</h5>
+    <ul class="params">
+      <li><code>None</code> means "cannot satisfy <code>n</code> evictions right now" — atomic: no state must change. The connector retries on the next step.</li>
+      <li>On success, return a list of <code>(key, block)</code> exactly <code>n</code> long, with no duplicates and no protected keys. The manager validates this structurally (§6.1 <code>prepare_store</code>); malformed output is treated as a write error.</li>
+      <li>Each returned block must have <code>ref_cnt == 0</code> and a <code>block_id</code> in the allocated range.</li>
+      <li>Post-eviction, <code>get(evict_key)</code> must return <code>None</code> for each evicted key.</li>
+    </ul>
+    <p class="small">Read-side per the supervisor: exceptions become <code>None</code>. But malformed (non-<code>None</code>, structurally wrong) returns are treated as write errors.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">export_state() -&gt; Iterable[(key, BlockStatus)]</span></div>
+    <p class="summary">Yield every currently resident <code>(key, BlockStatus)</code> exactly once. Called once on the outgoing policy at swap time; recency / ghost-list metadata is intentionally <em>not</em> exported.</p>
+    <p class="small">Required: a swap aborts before touching <code>manager._policy</code> if the outgoing policy cannot export — dropping the index while the block pool stays allocated would leak CPU slots.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">import_state(items) -&gt; None</span></div>
+    <p class="summary">Bulk-load resident blocks into a freshly constructed policy. Default implementation loops <code>insert(key, block)</code> with no <code>req_context</code>; subclasses may override for efficiency.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">policy</span><span class="path">record_write_error() -&gt; None</span></div>
+    <p class="summary">Notification hook called by the manager's hardened loop after a write-side exception or malformed <code>evict</code> output. The base implementation is a no-op so the manager never needs an <code>isinstance</code> check; <code>SupervisedCachePolicy</code> overrides it to advance the error budget.</p>
+  </div>
+
+  <h3 id="api-http">6.3 Hot-swap HTTP API</h3>
+  <p>Routes are registered from <a href="../vllm/entrypoints/serve/policy_hotswap/api_router.py"><code>vllm/entrypoints/serve/policy_hotswap/api_router.py</code></a> only when the feature gate is on (<code>--enable-policy-hotswap</code>, <code>VLLM_ENABLE_POLICY_HOTSWAP=1</code>, or <code>enable_policy_hotswap=True</code>). On a default deployment they do not exist.</p>
+
+  <div class="callout warn">
+    <strong>Localhost by default.</strong> The router rejects non-loopback clients (anything not <code>127.0.0.1</code> / <code>::1</code>) with HTTP 403 unless <code>VLLM_POLICY_HOTSWAP_ALLOW_REMOTE=1</code>. The gate is intentional: the swap endpoint executes arbitrary Python.
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb post">POST</span><span class="path">/v1/swap_offload_policy</span></div>
+    <p class="summary">Atomically replace the active <code>CachePolicy</code> on the engine's <code>CPUOffloadingManager</code>.</p>
+    <h5>Request body</h5>
+<pre><code>{
+  "source_path":   "/abs/path/to/policy.py",   // exactly one of these three
+  "module":        "my_pkg.evolved_v3",
+  "source":        "class Policy(CachePolicy): ...",
+  "name":          "arc-tournament",            // optional override of POLICY_NAME
+  "version":       "v3",                        // optional override of POLICY_VERSION
+  "policy_kwargs": {"target_t1_ratio": 0.5},    // forwarded to __init__
+  "dry_run":       false                        // validate + canary, no pointer flip
+}</code></pre>
+    <ul class="params">
+      <li>Exactly one of <code>source_path</code> / <code>module</code> / <code>source</code> must be set; supplying zero or more than one is HTTP 400.</li>
+      <li><code>source_path</code> resolves on the <strong>engine process's</strong> filesystem (not the API server's). Use <code>source</code> for containerized deployments where the path isn't visible.</li>
+      <li><code>module</code> resolves a dotted name to its source-backed <code>.py</code> file, then loads it under a synthetic module name.</li>
+      <li><code>policy_kwargs</code> is JSON-serializable kwargs passed to the policy's <code>__init__</code>.</li>
+      <li><code>dry_run=true</code> runs the loader and the canary but does not flip the pointer or increment the generation; useful for CI smoke tests.</li>
+    </ul>
+    <h5>Response (<code>SwapResult</code>)</h5>
+<pre><code>{
+  "ok": true,
+  "generation": 42,                  // post-swap generation
+  "previous_generation": 41,
+  "policy_name": "arc-tournament",
+  "policy_version": "v3",
+  "source_hash": "ab12cd34ef56",     // first 12 chars of SHA-256(source)
+  "dry_run": false,
+  "latency_ms": 12.3,
+  "error": null
+}</code></pre>
+    <h5>Status codes</h5>
+    <ul class="params">
+      <li><code>200</code> — swap accepted (or rejected with <code>ok:false</code>; see below).</li>
+      <li><code>400</code> — request validation error (more than one source, missing required field, bad JSON).</li>
+      <li><code>400</code> with <code>ok:false</code> — candidate-caused failure (load error, canary failure, missing metadata). The body still parses as <code>SwapResult</code> with <code>error</code> populated; the prior policy is preserved.</li>
+      <li><code>403</code> — feature off, or non-loopback client without <code>VLLM_POLICY_HOTSWAP_ALLOW_REMOTE</code>.</li>
+      <li><code>500</code> — unexpected internal error.</li>
+    </ul>
+    <h5>Example</h5>
+<pre><code>curl -s -X POST localhost:8000/v1/swap_offload_policy \
+  -H 'content-type: application/json' \
+  -d '{"source_path":"/work/CORAL/cand/policy.py","name":"cand-12","version":"g42"}'</code></pre>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb get">GET</span><span class="path">/v1/offload_policy</span></div>
+    <p class="summary">Read the active policy's metadata. Useful for "did my swap stick?" checks.</p>
+    <h5>Response (<code>ActivePolicy</code>)</h5>
+<pre><code>{
+  "engine_id":      "i-3a91c0f8",
+  "generation":     42,
+  "policy_name":    "arc-tournament",
+  "policy_version": "v3",
+  "source_hash":    "ab12cd34ef56",
+  "source_origin":  "path:/work/CORAL/cand/policy.py"
+}</code></pre>
+    <ul class="params">
+      <li><code>generation = 0</code> with <code>source_origin = "builtin"</code> is the initial state before any hot-swap.</li>
+      <li>After auto-rollback (§5), <code>source_origin = "rollback:&lt;previous_gen&gt;"</code>; treat that as a strong negative signal.</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb get">GET</span><span class="path">/v1/offload_policy_stats?reset=false</span></div>
+    <p class="summary">Snapshot of <code>OffloadPolicyStats</code> (manager counters + supervisor errors + sticky rollback fields). See §6.6 for the full shape.</p>
+    <ul class="params">
+      <li><code>reset=true</code> — zero out the manager counters, clear <code>hint_keys</code>, zero the active supervisor's error count, and clear the sticky <code>policy_rolled_back</code> / <code>rollback_generation</code> / <code>cumulative_policy_errors</code> fields. Call this at the start of each grader candidate.</li>
+      <li><code>reset=false</code> — read-only.</li>
+    </ul>
+  </div>
+
+  <h3 id="api-python">6.4 Hot-swap Python API</h3>
+  <p>The same three operations are exposed symmetrically on <code>LLM</code>, <code>LLMEngine</code>, <code>AsyncLLM</code>, and <code>AsyncLLMEngine</code>. Async variants prefix with <code>await</code>; otherwise signatures are identical. The forwarding chain is <code>LLM → LLMEngine → EngineCoreClient → call_utility(EngineCore.method, ...)</code> for multiprocess engines, and a direct call for <code>InprocClient</code>.</p>
+
+  <p>Enable the feature on construction:</p>
+<pre><code>from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="meta-llama/Llama-3.2-1B",
+    kv_transfer_config={
+        "kv_connector": "OffloadingConnector",
+        "kv_connector_extra_config": {
+            "spec_name": "CPUOffloadingSpec",
+            "cpu_bytes_to_use": 4 * 1024**3,
+            "eviction_policy": "lru",
+        },
+    },
+    enable_policy_hotswap=True,   # forwarded through to EngineArgs
+)</code></pre>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">Python</span><span class="path">llm.swap_offload_policy(...) -&gt; SwapResult</span></div>
+    <h5>Signature</h5>
+<pre><code>def swap_offload_policy(
+    self,
+    source_path:   str | None = None,
+    module:        str | None = None,
+    source:        str | None = None,
+    name:          str | None = None,
+    version:       str | None = None,
+    policy_kwargs: dict | None = None,
+    dry_run:       bool = False,
+) -&gt; SwapResult: ...</code></pre>
+    <h5>Behavior</h5>
+    <ul class="params">
+      <li>Exactly one of <code>source_path</code> / <code>module</code> / <code>source</code> must be set; otherwise raises <code>ValueError</code>.</li>
+      <li>Returns a <code>SwapResult</code> in all paths (success, candidate failure, dry run). The exception is config errors (more than one source, feature-off) which raise.</li>
+      <li>Idempotent for failed swaps: <code>manager._policy</code> is unchanged on any failure, <code>generation</code> is unchanged, the candidate's synthetic module is removed from <code>sys.modules</code>.</li>
+      <li>If a previous candidate has tripped its supervisor (§5), the registry runs cold rollback <em>before</em> attempting the new swap; the returned <code>previous_generation</code> reflects the rollback generation.</li>
+    </ul>
+    <h5>Example — CORAL grader</h5>
+<pre><code>result = llm.swap_offload_policy(source_path=str(candidate_path))
+if not result.ok:
+    return self.fail(f"swap failed: {result.error}")
+llm.get_offload_policy_stats(reset=True)
+llm.generate(prompts, SamplingParams(max_tokens=256))
+stats = llm.get_offload_policy_stats()
+score = stats.hit_rate / max(elapsed, 1e-6)</code></pre>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">Python</span><span class="path">llm.get_offload_policy() -&gt; ActivePolicy | None</span></div>
+    <p class="summary">Returns the active policy's metadata, or <code>None</code> if the engine doesn't have a CPU offloading manager attached.</p>
+    <p class="small">Useful as a post-swap sanity check: assert <code>get_offload_policy().generation</code> exceeds the value before <code>swap_offload_policy</code>.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">Python</span><span class="path">llm.get_offload_policy_stats(reset=False) -&gt; OffloadPolicyStats</span></div>
+    <p class="summary">Composite snapshot: manager counters + active supervisor errors + sticky rollback fields. See §6.6.</p>
+    <p class="small"><code>reset=True</code> clears everything to give the next candidate a clean window.</p>
+  </div>
+
+  <h3 id="api-hints">6.5 Per-request hints API</h3>
+  <p>Hints are opaque per-request data the policy can consult at <code>insert</code> / <code>touch</code> / <code>evict</code> time. The carrier is the existing <code>vllm_xargs</code> field; the framework injects a reserved <code>_request_id</code> key but otherwise treats the dict as untrusted, untyped pass-through.</p>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb post">HTTP</span><span class="path">vllm_xargs.policy_hints</span></div>
+    <p class="summary">On <code>POST /v1/completions</code> or <code>POST /v1/chat/completions</code>:</p>
+<pre><code>{
+  "model": "meta-llama/Llama-3.2-1B",
+  "prompt": "...",
+  "vllm_xargs": {
+    "policy_hints": {
+      "priority": "high",
+      "session_id": "u-7732",
+      "expected_reuse": 4
+    }
+  }
+}</code></pre>
+    <p class="small">No HTTP schema change is required across CORAL generations — the hint dict is opaque end-to-end. <code>vllm_xargs</code> is a documented user-extension field already exposed by both completion request types.</p>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">Python</span><span class="path">SamplingParams(extra_args={"policy_hints": {...}})</span></div>
+    <p class="summary">Offline / programmatic path:</p>
+<pre><code>llm.generate(
+    prompts,
+    [SamplingParams(max_tokens=256, extra_args={"policy_hints": h})
+     for h in hints_per_prompt],
+)</code></pre>
+  </div>
+
+  <p>The carrier path: <code>vllm_xargs.policy_hints</code> → <code>SamplingParams.extra_args["policy_hints"]</code> → <code>Request.policy_hints</code> (validated via <code>dict(raw_hints)</code>; <code>_request_id</code> injected) → <code>ReqContext.policy_hints</code> populated alongside <code>kv_transfer_params</code> in <code>RequestOffloadState.__post_init__</code> → <code>CPUOffloadingManager</code> threads <code>req_context</code> into <code>_policy.insert</code> / <code>touch</code> / <code>evict</code>.</p>
+
+  <div class="callout warn">
+    <strong>Untrusted user input.</strong> Hints come from any HTTP client. The framework guarantees only that <code>policy_hints</code> is <code>None</code> or a <code>dict</code>. Evolved policies must validate every key/value they consume — no <code>eval</code>, no path traversal, no PII echoing. Bounded-size <code>dict.get</code> with type checks; everything else is a policy bug.
+  </div>
+
+  <h3 id="api-stats">6.6 Stats &amp; metrics</h3>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">type</span><span class="path">OffloadPolicyStats</span></div>
+<pre><code>class OffloadPolicyStats(msgspec.Struct):
+    # Manager counters (per window)
+    lookups:                 int = 0
+    hits:                    int = 0
+    stores:                  int = 0
+    evictions:               int = 0
+    loads:                   int = 0
+    hit_rate:                float = 0.0    # hits / max(lookups, 1)
+    window_start_generation: int = 0
+    active_generation:       int = 0
+    hint_keys:               tuple[str, ...] = ()  # observed top-level keys
+
+    # Supervisor / rollback (sticky-within-window; cleared only by reset=True)
+    policy_errors:       int = 0   # cumulative + currently-active supervisor errors
+    policy_rolled_back:  bool = False
+    rollback_generation: int = 0   # generation rolled back from (0 if none)</code></pre>
+    <ul class="params">
+      <li><code>window_start_generation != active_generation</code> means stats span multiple policies — the score isn't attributable to a single candidate. Reset at the start of each candidate.</li>
+      <li><code>policy_rolled_back=True</code> means the score came from the recovered baseline (<code>LRUCachePolicy</code>), not from the candidate; the grader should treat this as a strong negative signal regardless of measured hit rate (in-flight blocks may have been corrupted, see §5).</li>
+      <li><code>hint_keys</code> is a smoke signal that a CORAL client shim's hints actually propagated; values are deliberately not exported.</li>
+    </ul>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">type</span><span class="path">ActivePolicy</span></div>
+<pre><code>class ActivePolicy(msgspec.Struct):
+    engine_id:      str
+    generation:     int
+    policy_name:    str
+    policy_version: str
+    source_hash:    str
+    source_origin:  str   # "builtin" | "path:/abs" | "module:dotted" | "source" | "rollback:&lt;gen&gt;"</code></pre>
+  </div>
+
+  <div class="api-block">
+    <div class="api-head"><span class="verb py">type</span><span class="path">SwapResult</span></div>
+<pre><code>class SwapResult(msgspec.Struct):
+    ok:                  bool
+    generation:          int                 # current after the call
+    previous_generation: int = 0             # 0 if never swapped before
+    policy_name:         str | None = None
+    policy_version:      str | None = None
+    source_hash:         str | None = None
+    dry_run:             bool = False
+    latency_ms:          float = 0.0
+    error:               str | None = None</code></pre>
+  </div>
+
+  <h4>Prometheus</h4>
+  <ul>
+    <li><code>vllm_policy_swap_count_total{result="ok|failed|dry_run"}</code> — counter.</li>
+    <li><code>vllm_policy_swap_latency_ms</code> — histogram of swap-call latency.</li>
+    <li><code>vllm_policy_errors_total</code> — counter; increments on every supervisor-recorded exception.</li>
+    <li><code>vllm_policy_rollbacks_total</code> — counter; increments on each cold auto-rollback.</li>
+    <li><code>vllm_policy_active_generation</code> — gauge of the current generation; jumps on swap and on rollback.</li>
+  </ul>
+</section>
+
+<section id="nongoals">
+  <h2><span class="num">7</span> Scope — what Phase 1 deliberately leaves out</h2>
+  <div class="grid-2">
+    <div class="card warn">
+      <h4>Not in Phase 1</h4>
+      <ul>
+        <li><strong>Weight-prefetch evolution</strong> — needs collective_rpc to workers and likely cudagraph re-capture. Sketched as Phase 2.</li>
+        <li><strong>Sandboxing untrusted code.</strong> The threat model is documented; full isolation is out of scope.</li>
+        <li><strong>Data-parallel broadcast / two-phase commit.</strong> <code>data_parallel_size &gt; 1</code> is rejected at engine init when hot-swap is enabled.</li>
+        <li><strong>Hang protection.</strong> Operator-side wall-clock timeouts (the grader already kills runaway candidates).</li>
+        <li><strong>Recency metadata across swaps.</strong> Only <code>(key, BlockStatus)</code> is migrated; evolved policies cold-start their LRU/ARC ordering.</li>
+      </ul>
+    </div>
+    <div class="card good">
+      <h4>What ships in Phase 1</h4>
+      <ul>
+        <li>Hot-swap of <code>CachePolicy</code> in <code>CPUOffloadingManager</code>, three delivery modes, atomic rollback.</li>
+        <li>Python (<code>LLM.swap_offload_policy</code>) and HTTP entry points; default-off + localhost-default.</li>
+        <li>Per-request <code>policy_hints</code> via <code>vllm_xargs</code>, end-to-end.</li>
+        <li><code>SupervisedCachePolicy</code>, error budget, cold auto-rollback into a fresh LRU.</li>
+        <li>Stats surface (<code>OffloadPolicyStats</code>) and Prometheus metrics so the grader doesn't scrape logs.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Generated from <a href="evolved_cpu_offloading.md">evolved_cpu_offloading.md</a> &middot; branch <code>feat/evolved_cpu_offloading</code>
+</footer>
+
+</div>
+</body>
+</html>

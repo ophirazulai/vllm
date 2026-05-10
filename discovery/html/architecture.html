@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architecture · vLLM V1 × Evolutionary Code Search</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      darkMode: true,
+      background: '#1c232c',
+      primaryColor: '#1c232c',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#4a5563',
+      lineColor: '#8b949e',
+      secondaryColor: '#0e1117',
+      tertiaryColor: '#161b22',
+      mainBkg: '#1c232c',
+      nodeBorder: '#4a5563',
+      clusterBkg: '#0e1117',
+      clusterBorder: '#30363d',
+      titleColor: '#e6edf3',
+      edgeLabelBackground: '#0e1117',
+      fontFamily: 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace'
+    },
+    flowchart: { curve: 'basis', useMaxWidth: true, htmlLabels: true, padding: 14 },
+    sequence: { useMaxWidth: true }
+  });
+</script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title">
+      <span class="logo">vL</span>
+      <a href="index.html">vLLM V1 × Evolutionary Code Search</a>
+    </h1>
+    <nav class="site-nav">
+      <a href="index.html">Overview</a>
+      <a href="architecture.html" class="active">Architecture</a>
+      <a href="inventory.html">Inventory</a>
+      <a href="methodology.html">Methodology</a>
+      <a href="index.html#modules">Modules</a>
+      <a href="https://github.com/vllm-project/vllm" target="_blank" rel="noreferrer">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>vLLM V1 Architecture
+    <span class="subtitle">Process layout, per-step flow, and module dependency map.</span>
+  </h1>
+
+  <section class="hero">
+    <p>vLLM V1 is a multi-process serving engine. The <strong>API server</strong> handles HTTP/OpenAI requests, marshals them to
+       an <strong>EngineCore</strong> process via ZMQ, and the EngineCore drives one or more <strong>GPU workers</strong>
+       through a tight <code>schedule()</code> → <code>execute_model()</code> → <code>update_from_output()</code> loop.</p>
+    <p>The diagrams below highlight where evolutionary code search has the highest leverage: orange nodes are the
+       <strong>top-10 evolve targets</strong>, blue nodes are stable infrastructure, and dashed edges mark
+       cross-process boundaries (ZMQ / NCCL / RDMA / NIXL).</p>
+  </section>
+
+  <h2>Process &amp; Module Map</h2>
+  <p class="section-intro">
+    Three-process layout (<code>APIServer</code> · <code>EngineCore</code> · <code>Worker</code>) with the V1 module groups
+    pinned where they execute. Click any orange node to jump to its module page.
+  </p>
+
+  <div class="arch-diagram">
+    <div class="mermaid">
+flowchart TB
+  classDef target fill:#3b2210,stroke:#d29922,stroke-width:2px,color:#f5d77b
+  classDef infra  fill:#0d2138,stroke:#4493f8,stroke-width:1px,color:#a5d2ff
+  classDef proc   fill:#10221a,stroke:#3fb950,stroke-width:2px,color:#a8e6b6
+  classDef ext    fill:#1c1c25,stroke:#8b949e,stroke-width:1px,color:#c9d1d9,stroke-dasharray:4 4
+
+  Client([HTTP / OpenAI Client]):::ext
+
+  subgraph APISERVER["fa:fa-server  API Server Process"]
+    direction TB
+    APIA[FastAPI / OpenAI route]:::infra
+    APIB[input_processor.py<br/>tokenize · chat-template]:::infra
+  end
+
+  subgraph CORE["fa:fa-microchip  EngineCore Process  (one per DP rank)"]
+    direction TB
+    ECCORE[engine/core.py<br/>busy loop]:::infra
+    SCHED["B · sched/scheduler.py<br/>schedule() · L352"]:::target
+    KV["C · core/kv_cache_manager.py<br/>+ block_pool.py + kv_cache_utils.py"]:::target
+    SO[H · structured_output<br/>xgrammar / outlines / guidance]:::infra
+    SD["G · spec_decode/<br/>llm_base_proposer + ngram + dflash"]:::target
+    EC[I · KV connector V1<br/>+ EC connector]:::infra
+  end
+
+  subgraph WORKER["fa:fa-microchip  Worker Process  (one per GPU)"]
+    direction TB
+    RUN[D · gpu_model_runner.py<br/>7,124 LoC monolith / MRV2]:::infra
+    ATTN["E · attention/backends/<br/>flash_attn · flashinfer · MLA"]:::target
+    SAMP["F · sample/<br/>topk_topp + rejection_sampler"]:::target
+    MOE["L · fused_moe/<br/>fused_moe_kernel + configs/*.json"]:::target
+    QUANT[K · quantization<br/>FP8 · Marlin · Machete · MXFP4]:::target
+    COMP["J · compilation/<br/>cuda_graph + piecewise_backend"]:::target
+    LORA[M · LoRA mixin<br/>SGMV / multi-LoRA]:::infra
+    MM[N · multimodal<br/>encoder_cache_manager]:::infra
+    CASC["P · cascade attention<br/>flash_attn lines 741-767"]:::infra
+    OPS["Q · custom ops<br/>RoPE · RMSNorm · paged-attn"]:::infra
+    POOL["O · pooling / embedding<br/>RFC 12249"]:::infra
+  end
+
+  Client -.HTTP.-> APIA
+  APIA --> APIB
+  APIB -. ZMQ .-> ECCORE
+  ECCORE --> SCHED
+  SCHED <--> KV
+  SCHED <--> SO
+  SCHED <--> SD
+  SCHED <--> EC
+  ECCORE -. ZMQ / IPC tensors .-> RUN
+  RUN --> ATTN
+  ATTN --> CASC
+  RUN --> MOE
+  RUN --> QUANT
+  RUN --> COMP
+  RUN --> SAMP
+  RUN --> LORA
+  RUN --> MM
+  RUN --> OPS
+  RUN --> POOL
+  MOE -. EP / DP all-to-all .-> EC
+  KV -. NCCL / RDMA / NIXL+UCX .-> EC
+
+  click SCHED "modules/B_scheduler.html" "Open Scheduler module"
+  click KV "modules/C_kv_cache_manager.html" "Open KV-Cache module"
+  click ATTN "modules/E_attention_backends.html" "Open Attention module"
+  click SAMP "modules/F_sampling.html" "Open Sampling module"
+  click MOE "modules/L_moe.html" "Open MoE module"
+  click QUANT "modules/K_quantization.html" "Open Quantization module"
+  click COMP "modules/J_compilation_cuda_graphs.html" "Open Compilation module"
+  click SD "modules/G_speculative_decoding.html" "Open Speculative Decoding module"
+    </div>
+
+    <div class="arch-legend">
+      <span><span class="swatch" style="background:#3b2210;border-color:#d29922"></span> Top-10 evolve target</span>
+      <span><span class="swatch" style="background:#0d2138;border-color:#4493f8"></span> Stable infrastructure</span>
+      <span><span class="swatch" style="background:#10221a;border-color:#3fb950"></span> Process boundary</span>
+      <span><span class="swatch" style="background:#1c1c25;border-color:#8b949e;border-style:dashed"></span> Cross-process / network edge</span>
+    </div>
+  </div>
+
+  <h2>Per-Step Request Flow</h2>
+  <p class="section-intro">
+    What happens on every <code>EngineCore</code> tick. <code>schedule()</code> is called with the current waiting + running queues,
+    produces a <code>SchedulerOutput</code>, the worker runs <code>execute_model()</code>, and <code>update_from_output()</code>
+    closes the loop with sampled tokens, KV-cache updates, and spec-decode acceptance counters.
+  </p>
+
+  <div class="arch-diagram">
+    <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant API as APIServer
+  participant EC as EngineCore.busy_loop
+  participant S as Scheduler
+  participant KV as KVCacheManager
+  participant SD as Proposer (eagle/ngram/dflash)
+  participant W as Worker
+  participant ATTN as AttentionBackend
+  participant SAMP as Sampler
+  participant SO as XGrammar / Outlines
+
+  API->>+EC: add_request (ZMQ)
+  EC->>+S: schedule()
+  S->>KV: get_computed_blocks(req)
+  KV-->>S: cached_block_hashes
+  S->>KV: allocate_slots(token_budget)
+  KV-->>S: block_ids
+  S->>SO: get_grammar_step(req)
+  SO-->>S: bitmask
+  S->>SD: get_drafts(running_reqs)
+  SD-->>S: draft_token_ids
+  S-->>-EC: SchedulerOutput
+  EC->>+W: execute_model(input_ids, slot_mapping)
+  W->>ATTN: build_metadata + plan()
+  ATTN-->>W: prefill+decode kernels
+  W->>SAMP: forward_cuda(top-k, top-p, min-p)
+  SAMP-->>W: sampled_token_ids + logprobs
+  W-->>-EC: ModelRunnerOutput
+  EC->>S: update_from_output(output)
+  S->>KV: free(finished) + cache(prefix)
+  S->>SD: record acceptance for adaptive draft-length
+  EC-->>API: stream tokens (ZMQ)
+    </div>
+  </div>
+
+  <h2>Module Group Dependencies</h2>
+  <p class="section-intro">
+    Coarser view of the 17 module groups (A–Q). Edges denote runtime calls or data flow during one engine tick;
+    dashed edges denote optional or conditional paths (e.g., spec-decode only when enabled, multimodal only for VLMs).
+  </p>
+
+  <div class="arch-diagram">
+    <div class="mermaid">
+flowchart LR
+  classDef A fill:#0d2138,stroke:#4493f8,color:#a5d2ff
+  classDef B fill:#3b2210,stroke:#d29922,color:#f5d77b
+  classDef C fill:#10221a,stroke:#3fb950,color:#a8e6b6
+
+  A[A · Engine Core]:::A
+  B[B · Scheduler]:::B
+  C[C · KV-Cache Manager]:::B
+  D[D · Worker / Model Runner]:::A
+  E[E · Attention Backends]:::B
+  F[F · Sampling]:::B
+  G[G · Speculative Decoding]:::B
+  H[H · Structured Output]:::A
+  I[I · Distributed / KV+EC]:::A
+  J[J · Compilation / CUDA Graphs]:::B
+  K[K · Quantization]:::B
+  L[L · MoE Stack]:::B
+  M[M · LoRA]:::A
+  N[N · Multimodal]:::A
+  O[O · Pooling / Embedding]:::A
+  P[P · Cascade Attention]:::A
+  Q[Q · Custom Ops]:::A
+
+  A --> B
+  A --> D
+  B --> C
+  B --> H
+  B -. spec-decode on .-> G
+  B -. encoder packing .-> N
+  B --> I
+  D --> E
+  D --> F
+  D --> J
+  D --> K
+  D --> L
+  D --> Q
+  D -. LoRA enabled .-> M
+  D -. VLM .-> N
+  D -. pooling task .-> O
+  E --> P
+  E --> Q
+  F --> G
+  L --> K
+  L --> J
+  K --> Q
+
+  click A "modules/A_engine_core.html" "Engine Core"
+  click B "modules/B_scheduler.html" "Scheduler"
+  click C "modules/C_kv_cache_manager.html" "KV-Cache Manager"
+  click D "modules/D_worker_model_runner.html" "Worker / Model Runner"
+  click E "modules/E_attention_backends.html" "Attention Backends"
+  click F "modules/F_sampling.html" "Sampling"
+  click G "modules/G_speculative_decoding.html" "Speculative Decoding"
+  click H "modules/H_structured_output.html" "Structured Output"
+  click I "modules/I_distributed_kv_connector.html" "Distributed / KV+EC"
+  click J "modules/J_compilation_cuda_graphs.html" "Compilation / CUDA Graphs"
+  click K "modules/K_quantization.html" "Quantization"
+  click L "modules/L_moe.html" "MoE Stack"
+  click M "modules/M_lora.html" "LoRA"
+  click N "modules/N_multimodal.html" "Multimodal"
+  click O "modules/O_pooling_embedding.html" "Pooling / Embedding"
+  click P "modules/P_cascade_attention.html" "Cascade Attention"
+  click Q "modules/Q_custom_ops.html" "Custom Ops"
+    </div>
+  </div>
+
+  <h2>Code Anchors</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Path</th><th>Symbol</th><th>Line</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_mamba_block_aligned_split</code></td><td>302</td><td>Block-aligned chunked prefill for Mamba/hybrid (target #10)</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>schedule</code></td><td>352</td><td>Main per-step admission + budgeting (target #2)</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_preempt_request</code></td><td>952</td><td>Preemption victim selection</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_make_cached_request_data</code></td><td>1043</td><td>Step bookkeeping</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_try_schedule_encoder_inputs</code></td><td>1103</td><td>VLM encoder-input scheduling</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>update_from_output</code></td><td>1290</td><td>Per-step bookkeeping after model run</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_select_waiting_queue_for_scheduling</code></td><td>1567</td><td>Picks waiting vs skipped_waiting (issue #27441)</td></tr>
+      <tr><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>_try_promote_blocked_waiting_request</code></td><td>2061</td><td>Promotion logic</td></tr>
+      <tr><td><code>vllm/v1/core/kv_cache_manager.py</code></td><td colspan="2">541 LoC</td><td>Block allocation, prefix-cache lookup</td></tr>
+      <tr><td><code>vllm/v1/core/block_pool.py</code></td><td colspan="2">509 LoC</td><td>LRU eviction, cached_block hash table</td></tr>
+      <tr><td><code>vllm/v1/sample/ops/topk_topp_sampler.py</code></td><td colspan="2">410 LoC</td><td><code>forward_cuda</code> + <code>apply_top_k_only</code> (target #5)</td></tr>
+      <tr><td><code>vllm/v1/sample/rejection_sampler.py</code></td><td colspan="2">921 LoC</td><td>Triton kernels (target #6)</td></tr>
+      <tr><td><code>vllm/v1/worker/gpu_model_runner.py</code></td><td colspan="2">7,124 LoC</td><td>"Monolith" — being split into <code>vllm/v1/worker/gpu/</code> (MRV2)</td></tr>
+      <tr><td><code>vllm/v1/spec_decode/eagle.py</code></td><td colspan="2">22 LoC</td><td>Thin stub; logic in <code>llm_base_proposer.py</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>Reading the diagrams.</strong> The first (Process &amp; Module Map) and third (Module Group Dependencies)
+    flowcharts are <em>interactive</em> — click any node to jump to that module's page. The middle sequence diagram
+    is reference-only. Cross-process arrows (dashed) carry serialized tensors / token IDs over ZMQ; the
+    <code>NCCL / RDMA / NIXL+UCX</code> link is the P/D-disaggregation KV transfer path that lives in
+    <code>vllm/distributed/kv_transfer/kv_connector/v1/</code>.
+  </div>
+
+</main>
+
+<footer class="site-footer">
+  Generated from <code>discovery/vllm_discovery.md</code> · Verified at HEAD <code>e6ff3e9c8</code> · 2026-05
+</footer>
+
+</body>
+</html>

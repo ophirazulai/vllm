@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Methodology · vLLM × Evolutionary Code Search</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <h1 class="site-title"><span class="logo">vL</span><a href="index.html">vLLM V1 × Evolutionary Code Search</a></h1>
+    <nav class="site-nav">
+      <a href="index.html">Overview</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="inventory.html">Inventory</a>
+      <a href="methodology.html" class="active">Methodology</a>
+      <a href="index.html#modules">Modules</a>
+      <a href="https://github.com/vllm-project/vllm" target="_blank" rel="noreferrer">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1>Methodology
+    <span class="subtitle">How to actually run program-search on a vLLM target — staged plan, sandbox boundaries, and the meta-paper layer.</span>
+  </h1>
+
+  <section class="hero">
+    <p>Per-module pages list <em>where</em> to evolve and the relevant domain literature. This page covers <em>how</em> —
+       the program-search machinery itself (FunSearch, AlphaEvolve, OpenEvolve, Eureka, MAP-Elites), the recommended
+       Stage 1/2/3 ramp, and the safeguards (correctness gates, multi-trace evaluators, robust-kbench-style benchmark
+       hardening) that the cited literature considers mandatory.</p>
+  </section>
+
+  <h2 id="staged-plan">Staged Plan</h2>
+  <p class="section-intro">The recommended ramp from low-risk wins to high-risk / high-reward targets. Threshold-gated.</p>
+
+  <h3>Stage 1 — Lowest-risk wins (week 1–2)</h3>
+  <ul class="clean">
+    <li>Start OpenEvolve on <strong>fused-MoE JSON configs</strong>
+        (<a href="modules/L_moe.html">target #1, MoE module</a>) for one (E, N, GPU) tuple already in production
+        (DeepSeek-V3 / H100, Qwen3-MoE / B200). The benchmark <code>benchmarks/kernels/benchmark_moe.py</code> exists;
+        falling back to the static <code>configs/E=...</code> on regression is trivial.</li>
+    <li>In parallel, run OpenEvolve on <strong>top-k/top-p forward_cuda</strong>
+        (<a href="modules/F_sampling.html">target #5, Sampling module</a>) using a microbench. K-S correctness gate keeps this safe.</li>
+    <li>This pair gives one MoE-shaped and one sampler-shaped result quickly, on hardware similar to what evolutionary
+        kernel papers (Kernel-Smith, KernelFoundry, GEAK-OpenEvolve) have already explored.</li>
+    <li><strong>Threshold to escalate:</strong> ≥10% median latency improvement over the current <code>configs/</code>
+        baseline at iso-correctness, on a multi-trace evaluator.</li>
+  </ul>
+
+  <h3>Stage 2 — Medium-risk algorithmic targets (week 3–6)</h3>
+  <ul class="clean">
+    <li>Evolve the <strong>scheduler waiting-queue ordering</strong>
+        (<a href="modules/B_scheduler.html">target #2</a>) and <strong>spec-decode draft-length policy</strong>
+        (<a href="modules/G_speculative_decoding.html">target #4</a>) inside a sandbox that exposes only a restricted Python API
+        (<code>Request.priority</code>, <code>arrival_time</code>, <code>num_prompt_tokens</code>,
+        <code>num_computed_tokens</code>, <code>kv_cache_utilization</code>, <code>running_lora_count</code>,
+        <code>acceptance_history</code>). Use <code>benchmarks/benchmark_serving.py</code> against ShareGPT,
+        Mooncake-Conversation, and BurstGPT.</li>
+    <li><strong>Threshold:</strong> Pareto-dominate the current FCFS+chunked-prefill baseline on
+        (TTFT p99, TPOT p99, throughput) on at least 2 of 3 traces.</li>
+    <li><strong>Safety:</strong> add a fairness regression harness (cf. VTC, Locality-aware Fair Scheduling) before
+        committing — easy to overfit to throughput at the cost of starvation.</li>
+  </ul>
+
+  <h3>Stage 3 — High-risk / high-reward (month 2+)</h3>
+  <ul class="clean">
+    <li>Evolve the <strong>prefix-cache hash function</strong>
+        (<a href="modules/C_kv_cache_manager.html">target #3</a>) and the
+        <strong>CUDA-graph mode/size dispatcher</strong>
+        (<a href="modules/J_compilation_cuda_graphs.html">target #7</a>). These need strong correctness oracles —
+        collision tests on a 1B-token corpus + full vLLM unit-test suite + <code>lm_eval</code> accuracy parity. Use a
+        2-stage evaluator: (a) correctness gate, (b) performance scoring.</li>
+    <li>Evolve the <strong>Marlin/Machete shape-dispatch heuristic</strong>
+        (<a href="modules/K_quantization.html">target #9</a>) — likely highest dollar-impact target because it sits in
+        every quantized GEMM call in production.</li>
+  </ul>
+
+  <h2 id="machinery">Sandbox &amp; Evaluator Recipe</h2>
+
+  <div class="callout">
+    <strong>Always do.</strong>
+    Use <strong>OpenEvolve with MAP-Elites archive</strong> keyed on (batch-size bucket, sequence-length bucket).
+    Inject <strong>profiler feedback</strong> into prompts (NCU for kernels, vLLM Prometheus metrics for scheduler).
+    Run a <strong>multi-trace evaluator</strong> to prevent overfitting to a single workload.
+    Co-evaluate <strong>accuracy preservation</strong> (<code>lm-eval</code> on a held-out set) for any candidate
+    that touches numerics. Use <strong>vLLM's CI suite as a correctness gate</strong> before any candidate is committed.
+  </div>
+
+  <div class="callout warn">
+    <strong>Never trust loose tolerances.</strong>
+    Kernel-Smith, EvoEngineer, and robust-kbench (Sakana AI 2025) explicitly document LLMs discovering "kernels" that
+    pass loose tolerance tests but produce incorrect outputs in production. The Sakana paper documents that benchmark
+    exploits inflated reported speedups by ~2× on KernelBench; treat all "12×–449×" headline numbers (CUDA-L1 v1) as
+    upper bounds requiring robust-kbench-style validation.
+  </div>
+
+  <div class="callout warn">
+    <strong>C++ rebuild cost.</strong>
+    vLLM-internal heuristics often live in C++/CUDA, not Python. Marlin/Machete kernel selection logic is partially
+    inside CMake-built native code (<code>csrc/quantization/</code>); these are evolvable, but the evaluator harness
+    must rebuild C++ on each candidate, multiplying iteration cost ~10–100×. <strong>Prefer the Python-side dispatch
+    heuristics first.</strong>
+  </div>
+
+  <h2 id="meta-papers">Meta-Paper Layer</h2>
+  <p class="section-intro">The methodology literature itself — LLM-driven program / kernel / algorithm search.
+     Per-module pages cite these where they apply; this is the consolidated index.</p>
+
+  <h3>Foundational program-search</h3>
+  <ol class="paper-list">
+    <li><span class="paper-title">Romera-Paredes et al. — FunSearch: Mathematical discoveries from program search with large language models.</span>
+      <span class="paper-meta">Nature 625 (2024).</span> <span class="paper-id">doi:10.1038/s41586-023-06924-6</span>
+      <span class="paper-direction">The pattern. Bin-packing heuristics evolved by FunSearch are the same shape as queue-admission policies.</span></li>
+    <li><span class="paper-title">Novikov, Vũ, Eisenberger et al. — AlphaEvolve: A coding agent for scientific and algorithmic discovery.</span>
+      <span class="paper-meta">Google DeepMind 2025.</span> <span class="paper-id">arXiv:2506.13131</span>
+      <span class="paper-direction"><strong>The vLLM precedent.</strong> Reports an evolved datacenter scheduler that recovered 0.7% of Google compute, plus +23% kernel-tiling and +32% FlashAttention internal speedups.</span></li>
+    <li><span class="paper-title">OpenEvolve.</span>
+      <span class="paper-meta">codelion/openevolve, 2025.</span>
+      <span class="paper-direction">Open-source AlphaEvolve implementation — the recommended starting point for vLLM evolve work.</span></li>
+    <li><span class="paper-title">Ma, Liang et al. — Eureka: Human-Level Reward Design via Coding LLMs.</span>
+      <span class="paper-meta">ICLR 2024.</span> <span class="paper-id">arXiv:2310.12931</span>
+      <span class="paper-direction">Reward function search.</span></li>
+    <li><span class="paper-title">Liu et al. — DeepEvolve: Augmenting AlphaEvolve with Deep Research.</span>
+      <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2510.06056</span></li>
+    <li><span class="paper-title">CodeEvolve.</span> <span class="paper-meta">2024.</span> <span class="paper-id">arXiv:2407.09876</span></li>
+  </ol>
+
+  <h3>Quality-Diversity / archive</h3>
+  <ol class="paper-list">
+    <li><span class="paper-title">Lehman, Stanley — Quality-Diversity / MAP-Elites.</span> <span class="paper-meta">2015.</span>
+      <span class="paper-direction">The MAP-Elites archive is what keeps evolution from collapsing into a single shape regime.</span></li>
+    <li><span class="paper-title">Mouret, Clune — MAP-Elites.</span> <span class="paper-meta">2015.</span> <span class="paper-id">arXiv:1504.04909</span></li>
+  </ol>
+
+  <h3>Kernel-search-specific</h3>
+  <ol class="paper-list">
+    <li><span class="paper-title">Ouyang, Guo et al. — KernelBench: Can LLMs Write Efficient GPU Kernels?</span>
+      <span class="paper-meta">ICML 2025.</span> <span class="paper-id">arXiv:2502.10517</span>
+      <span class="paper-direction">Standard evaluation harness for evolved kernels.</span></li>
+    <li><span class="paper-title">Lange et al. — AI CUDA Engineer / robust-kbench.</span>
+      <span class="paper-meta">Sakana AI 2025.</span>
+      <span class="paper-direction"><strong>Read first.</strong> Documents how benchmark exploits inflate reported speedups; the robust-kbench protocol is required to validate evolved kernels.</span></li>
+    <li><span class="paper-title">Baronio et al. — Kevin: Multi-Turn RL for Generating CUDA Kernels.</span>
+      <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2507.11948</span></li>
+    <li><span class="paper-title">Li et al. — CUDA-L1: Improving CUDA Optimization via Contrastive RL.</span>
+      <span class="paper-meta">ICLR 2026.</span> <span class="paper-id">arXiv:2507.14111</span></li>
+    <li><span class="paper-title">CUDA-L2.</span> <span class="paper-meta">2025/26.</span> <span class="paper-id">arXiv:2512.02551</span>
+      <span class="paper-direction">Multi-stage RL with NCU profiling — the profiler-feedback recipe.</span></li>
+    <li><span class="paper-title">Andrews &amp; Witteveen — GPU Kernel Scientist.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2506.20807</span></li>
+    <li><span class="paper-title">Chen et al. — CUDA-LLM.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2506.09092</span></li>
+    <li><span class="paper-title">Tschand et al. — SwizzlePerf: Hardware-Aware LLMs for GPU Kernel Performance.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">EvoEngineer.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2510.03760</span></li>
+    <li><span class="paper-title">Kernel-Smith — Unified Recipe for Evolutionary Kernel Optimization.</span>
+      <span class="paper-meta">2026 anchor.</span> <span class="paper-id">arXiv:2603.28342</span>
+      <span class="paper-direction">Uses OpenEvolve directly on Triton — closest methodology to the vLLM target list.</span></li>
+    <li><span class="paper-title">KernelFoundry: Hardware-Aware Evolutionary GPU Kernel Optimization.</span>
+      <span class="paper-meta">2026.</span> <span class="paper-id">arXiv:2603.12440</span></li>
+    <li><span class="paper-title">Meta — KernelEvolve: Scaling Agentic Kernel Coding for Heterogeneous AI Accelerators.</span>
+      <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2512.23236</span></li>
+    <li><span class="paper-title">AMD — GEAK-OptimAgentv2 / GEAK-OpenEvolve.</span>
+      <span class="paper-meta">ROCm Blogs 2025.</span>
+      <span class="paper-direction">Methodology transfers from AMD ROCm to NVIDIA Triton.</span></li>
+    <li><span class="paper-title">PyTorch / FAIR — KernelLLM-8B and KernelBook.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">AutoTriton — RL for Triton programming.</span> <span class="paper-meta">2025.</span></li>
+    <li><span class="paper-title">CudaForge.</span> <span class="paper-meta">2025.</span> <span class="paper-id">arXiv:2511.01884</span>
+      <span class="paper-direction">Profiler-feedback yields ~2× sample-efficiency gain.</span></li>
+    <li><span class="paper-title">Discovering Multiagent Learning Algorithms with LLMs.</span>
+      <span class="paper-meta">2026.</span> <span class="paper-id">arXiv:2602.16928</span></li>
+  </ol>
+
+  <h2 id="caveats">Caveats &amp; Anti-patterns</h2>
+  <ul class="clean">
+    <li><strong>Don't trust headline numbers.</strong> The Sakana AI CUDA Engineer paper documents that benchmark
+        exploits inflated reported speedups by ~2× on KernelBench. Treat all "12×–449×" claims as upper bounds requiring
+        robust-kbench validation.</li>
+    <li><strong>Don't skip the correctness gate.</strong> Kernel-Smith, EvoEngineer, and robust-kbench all document
+        evolved kernels that pass loose tolerance but produce wrong outputs in production.</li>
+    <li><strong>Don't overfit to one trace.</strong> Multi-trace evaluators (ShareGPT + Mooncake-Conversation +
+        BurstGPT for serving; multi-shape grids for kernels) are mandatory.</li>
+    <li><strong>Don't evolve C++ first.</strong> Iteration cost dominates; do Python-side dispatch heuristics first.</li>
+    <li><strong>Track MRV2.</strong> vLLM is mid-migration to <code>vllm/v1/worker/gpu/</code>; evolved code targeting
+        the legacy <code>vllm/v1/worker/gpu_model_runner.py</code> monolith risks bit-rot.</li>
+  </ul>
+
+  <p style="margin-top:32px;font-size:13px;">
+    <a href="index.html">← Overview</a> ·
+    <a href="architecture.html">Architecture</a> ·
+    <a href="inventory.html">Flat inventory</a> ·
+    <a href="index.html#modules">Modules</a>
+  </p>
+
+</main>
+
+<footer class="site-footer">Generated from <code>discovery/vllm_discovery.md</code> · HEAD <code>e6ff3e9c8</code></footer>
+</body>
+</html>
